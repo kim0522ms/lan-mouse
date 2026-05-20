@@ -198,6 +198,8 @@ pub enum FrontendEvent {
     CaptureStatus(Status),
     /// emulation status
     EmulationStatus(Status),
+    /// clipboard sharing preference
+    ClipboardSharing(bool),
     /// authorized public key fingerprints have been updated
     AuthorizedUpdated(HashMap<String, String>),
     /// public key fingerprint of this device
@@ -245,6 +247,8 @@ pub enum FrontendRequest {
     EnableCapture,
     /// request reenabling input emulation
     EnableEmulation,
+    /// enable or disable clipboard sharing
+    SetClipboardSharing(bool),
     /// synchronize all state
     Sync,
     /// authorize fingerprint (description, fingerprint)
@@ -272,6 +276,29 @@ impl From<Status> for bool {
             Status::Enabled => true,
             Status::Disabled => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clipboard_sharing_event_round_trips_json() {
+        let event = FrontendEvent::ClipboardSharing(true);
+        let json = serde_json::to_string(&event).expect("serialize event");
+        let decoded: FrontendEvent = serde_json::from_str(&json).expect("decode event");
+
+        assert!(matches!(decoded, FrontendEvent::ClipboardSharing(true)));
+    }
+
+    #[test]
+    fn set_clipboard_sharing_request_round_trips_json() {
+        let request = FrontendRequest::SetClipboardSharing(false);
+        let json = serde_json::to_string(&request).expect("serialize request");
+        let decoded: FrontendRequest = serde_json::from_str(&json).expect("decode request");
+
+        assert_eq!(decoded, request);
     }
 }
 

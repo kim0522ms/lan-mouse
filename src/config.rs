@@ -53,6 +53,7 @@ struct ConfigToml {
     emulation_backend: Option<EmulationBackend>,
     port: Option<u16>,
     release_bind: Option<Vec<scancode::Linux>>,
+    clipboard_sharing: Option<bool>,
     cert_path: Option<PathBuf>,
     clients: Option<Vec<TomlClient>>,
     authorized_fingerprints: Option<HashMap<String, String>>,
@@ -479,6 +480,22 @@ impl Config {
             .unwrap_or(Vec::from_iter(DEFAULT_RELEASE_KEYS.iter().cloned()))
     }
 
+    /// whether clipboard sharing is enabled
+    pub fn clipboard_sharing(&self) -> bool {
+        self.config_toml
+            .as_ref()
+            .and_then(|c| c.clipboard_sharing)
+            .unwrap_or(false)
+    }
+
+    /// enable or disable clipboard sharing
+    pub fn set_clipboard_sharing(&mut self, enabled: bool) {
+        if self.config_toml.is_none() {
+            self.config_toml = Some(Default::default());
+        }
+        self.config_toml.as_mut().expect("config").clipboard_sharing = Some(enabled);
+    }
+
     /// set configured clients
     pub fn set_clients(&mut self, clients: Vec<ConfigClient>) {
         if clients.is_empty() {
@@ -556,5 +573,27 @@ impl Config {
         let _ = self.watch();
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clipboard_sharing_defaults_to_disabled_in_toml() {
+        let config: ConfigToml = toml::from_str("").expect("empty config");
+
+        assert_eq!(config.clipboard_sharing, None);
+    }
+
+    #[test]
+    fn clipboard_sharing_round_trips_through_toml() {
+        let config: ConfigToml =
+            toml::from_str("clipboard_sharing = true").expect("clipboard config");
+        let serialized = toml_edit::ser::to_string_pretty(&config).expect("serialize config");
+        let decoded: ConfigToml = toml::from_str(&serialized).expect("decode config");
+
+        assert_eq!(decoded.clipboard_sharing, Some(true));
     }
 }

@@ -1,8 +1,11 @@
-use crate::listen::{LanMouseListener, ListenEvent, ListenerCreationError};
+use crate::{
+    clipboard::{ClipboardTransferReceiver, SystemClipboard},
+    listen::{LanMouseListener, ListenEvent, ListenerCreationError},
+};
 use futures::StreamExt;
 use input_emulation::{EmulationHandle, InputEmulation, InputEmulationError};
 use input_event::Event;
-use lan_mouse_proto::{Position, ProtoEvent};
+use lan_mouse_proto::{CAP_CLIPBOARD, Position, ProtoEvent, local_capabilities};
 use local_channel::mpsc::{Receiver, Sender, channel};
 use std::{
     cell::Cell,
@@ -58,6 +61,7 @@ enum EmulationRequest {
     Reenable,
     Release(SocketAddr),
     ChangePort(u16),
+    SetClipboardSharing(bool),
     Terminate,
 }
 
@@ -65,6 +69,7 @@ impl Emulation {
     pub(crate) fn new(
         backend: Option<input_emulation::Backend>,
         listener: LanMouseListener,
+        clipboard_sharing: bool,
     ) -> Self {
         let emulation_proxy = EmulationProxy::new(backend);
         let (request_tx, request_rx) = channel();
@@ -72,6 +77,7 @@ impl Emulation {
         let emulation_task = ListenTask {
             listener,
             emulation_proxy,
+            clipboard_sharing: Rc::new(Cell::new(clipboard_sharing)),
             request_rx,
             event_tx,
         };
@@ -101,6 +107,12 @@ impl Emulation {
             .expect("channel closed")
     }
 
+    pub(crate) fn set_clipboard_sharing(&self, enabled: bool) {
+        self.request_tx
+            .send(EmulationRequest::SetClipboardSharing(enabled))
+            .expect("channel closed")
+    }
+
     pub(crate) async fn event(&mut self) -> EmulationEvent {
         self.event_rx.recv().await.expect("channel closed")
     }
@@ -120,6 +132,7 @@ impl Emulation {
 struct ListenTask {
     listener: LanMouseListener,
     emulation_proxy: EmulationProxy,
+    clipboard_sharing: Rc<Cell<bool>>,
     request_rx: Receiver<EmulationRequest>,
     event_tx: Sender<EmulationEvent>,
 }
@@ -129,6 +142,8 @@ impl ListenTask {
         let mut interval = tokio::time::interval(Duration::from_secs(5));
         let mut last_response = HashMap::new();
         let mut rejected_connections = HashMap::new();
+        let mut peer_capabilities = HashMap::new();
+        let mut clipboard_transfers = HashMap::new();
         loop {
             select! {
                 e = self.listener.next() => {match e {
@@ -136,21 +151,70 @@ impl ListenTask {
                         log::trace!("{event} <-<-<-<-<- {addr}");
                         last_response.insert(addr, Instant::now());
                         match event {
-                            ProtoEvent::Enter(pos) => {
+                            ProtoEvent::Enter { pos, capabilities } => {
+                                peer_capabilities.insert(addr, capabilities);
                                 if let Some(fingerprint) = self.listener.get_certificate_fingerprint(addr).await {
                                     log::info!("releasing capture: {addr} entered this device");
+                                    if self.clipboard_sharing.get() {
+                                        if capabilities & CAP_CLIPBOARD == 0 {
+                                            log::info!(
+                                                "clipboard will not be received from {addr}: peer does not advertise clipboard support"
+                                            );
+                                        } else {
+                                            log::info!("clipboard sharing negotiated with {addr}");
+                                        }
+                                    }
                                     self.event_tx.send(EmulationEvent::ReleaseNotify).expect("channel closed");
-                                    self.listener.reply(addr, ProtoEvent::Ack(0)).await;
+                                    self.listener.reply(addr, ProtoEvent::Ack { serial: 0, capabilities: local_capabilities(self.clipboard_sharing.get()) }).await;
                                     self.event_tx.send(EmulationEvent::Entered{addr, pos: to_ipc_pos(pos), fingerprint}).expect("channel closed");
                                 }
                             }
                             ProtoEvent::Leave(_) => {
                                 self.emulation_proxy.remove(addr);
-                                self.listener.reply(addr, ProtoEvent::Ack(0)).await;
+                                peer_capabilities.remove(&addr);
+                                clipboard_transfers.remove(&addr);
+                                self.listener.reply(addr, ProtoEvent::Ack { serial: 0, capabilities: local_capabilities(self.clipboard_sharing.get()) }).await;
                             }
                             ProtoEvent::Input(event) => self.emulation_proxy.consume(event, addr),
-                            ProtoEvent::Ping => self.listener.reply(addr, ProtoEvent::Pong(self.emulation_proxy.emulation_active.get())).await,
-                            _ => {}
+                            ProtoEvent::Clipboard(chunk) => {
+                                if !self.clipboard_sharing.get() {
+                                    log::debug!("clipboard not applied: clipboard sharing is disabled");
+                                    continue;
+                                }
+                                if peer_capabilities
+                                    .get(&addr)
+                                    .is_none_or(|capabilities| capabilities & CAP_CLIPBOARD == 0)
+                                {
+                                    log::info!(
+                                        "clipboard not applied from {addr}: peer does not advertise clipboard support"
+                                    );
+                                    continue;
+                                }
+                                let chunk_count = chunk.chunk_count;
+                                let receiver = clipboard_transfers
+                                    .entry(addr)
+                                    .or_insert_with(ClipboardTransferReceiver::default);
+                                match receiver.push(chunk) {
+                                    Ok(Some(data)) => {
+                                        let mime = data.mime.clone();
+                                        let byte_count = data.payload.len();
+                                        if let Err(e) = SystemClipboard::set(data) {
+                                            log::debug!("clipboard not applied: {e}");
+                                        } else {
+                                            log::info!(
+                                                "clipboard applied from {addr}: {mime}, {byte_count} byte(s), {chunk_count} chunk(s)"
+                                            );
+                                        }
+                                    }
+                                    Ok(None) => {}
+                                    Err(e) => log::warn!("invalid clipboard transfer from {addr}: {e}"),
+                                }
+                            }
+                            ProtoEvent::Ack { capabilities, .. }
+                            | ProtoEvent::Pong { capabilities, .. } => {
+                                peer_capabilities.insert(addr, capabilities);
+                            }
+                            ProtoEvent::Ping => self.listener.reply(addr, ProtoEvent::Pong { alive: self.emulation_proxy.emulation_active.get(), capabilities: local_capabilities(self.clipboard_sharing.get()) }).await,
                         }
                     }
                     Some(ListenEvent::Accept { addr, fingerprint }) => {
@@ -177,6 +241,12 @@ impl ListenTask {
                         let result = self.listener.port_changed().await;
                         self.event_tx.send(EmulationEvent::PortChanged(result)).expect("channel closed");
                     }
+                    EmulationRequest::SetClipboardSharing(enabled) => {
+                        self.clipboard_sharing.set(enabled);
+                        if !enabled {
+                            clipboard_transfers.clear();
+                        }
+                    }
                     EmulationRequest::Terminate => break,
                 },
                 _ = interval.tick() => {
@@ -184,6 +254,8 @@ impl ListenTask {
                         if instant.elapsed() > Duration::from_secs(1) {
                             log::warn!("releasing keys: {addr} not responding!");
                             self.emulation_proxy.remove(addr);
+                            peer_capabilities.remove(&addr);
+                            clipboard_transfers.remove(&addr);
                             self.event_tx.send(EmulationEvent::Disconnected { addr }).expect("channel closed");
                             false
                         } else {

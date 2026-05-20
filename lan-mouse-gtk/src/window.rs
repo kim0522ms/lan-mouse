@@ -403,6 +403,10 @@ impl Window {
         self.request(FrontendRequest::EnableEmulation);
     }
 
+    pub(super) fn request_clipboard_sharing(&self, enabled: bool) {
+        self.request(FrontendRequest::SetClipboardSharing(enabled));
+    }
+
     fn request_client_create(&self) {
         self.request(FrontendRequest::Create);
     }
@@ -463,6 +467,18 @@ impl Window {
     pub(super) fn set_emulation(&self, active: bool) {
         self.imp().emulation_active.replace(active);
         self.update_capture_emulation_status();
+    }
+
+    pub(super) fn set_clipboard_sharing(&self, enabled: bool) {
+        let switch = self.imp().clipboard_sharing_switch.get();
+        self.imp().clipboard_sharing_syncing.set(true);
+        if switch.is_active() != enabled {
+            switch.set_active(enabled);
+        }
+        if switch.state() != enabled {
+            switch.set_state(enabled);
+        }
+        self.imp().clipboard_sharing_syncing.set(false);
     }
 
     #[cfg(target_os = "macos")]

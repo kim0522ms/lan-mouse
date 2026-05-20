@@ -1,6 +1,6 @@
 use crate::client::ClientManager;
 use lan_mouse_ipc::{ClientHandle, DEFAULT_PORT};
-use lan_mouse_proto::{MAX_EVENT_SIZE, ProtoEvent};
+use lan_mouse_proto::{CAP_CLIPBOARD, MAX_EVENT_SIZE, ProtoEvent};
 use local_channel::mpsc::{Receiver, Sender, channel};
 use std::{
     cell::RefCell,
@@ -99,6 +99,7 @@ pub(crate) struct LanMouseConnection {
     recv_rx: Receiver<(ClientHandle, ProtoEvent)>,
     recv_tx: Sender<(ClientHandle, ProtoEvent)>,
     ping_response: Rc<RefCell<HashSet<SocketAddr>>>,
+    capabilities: Rc<RefCell<HashMap<ClientHandle, u32>>>,
 }
 
 impl LanMouseConnection {
@@ -112,6 +113,7 @@ impl LanMouseConnection {
             recv_rx,
             recv_tx,
             ping_response: Default::default(),
+            capabilities: Default::default(),
         }
     }
 
@@ -124,6 +126,7 @@ impl LanMouseConnection {
         event: ProtoEvent,
         handle: ClientHandle,
     ) -> Result<(), LanMouseConnectionError> {
+        let event_desc = event.to_string();
         let (buf, len): ([u8; MAX_EVENT_SIZE], usize) = event.into();
         let buf = &buf[..len];
         if let Some(addr) = self.client_manager.active_addr(handle) {
@@ -139,10 +142,11 @@ impl LanMouseConnection {
                     Ok(_) => {}
                     Err(e) => {
                         log::warn!("client {handle} failed to send: {e}");
+                        self.capabilities.borrow_mut().remove(&handle);
                         disconnect(&self.client_manager, handle, addr, &self.conns).await;
                     }
                 }
-                log::trace!("{event} >->->->->- {addr}");
+                log::trace!("{event_desc} >->->->->- {addr}");
                 return Ok(());
             }
         }
@@ -160,9 +164,18 @@ impl LanMouseConnection {
                 self.connecting.clone(),
                 self.recv_tx.clone(),
                 self.ping_response.clone(),
+                self.capabilities.clone(),
             ));
         }
         Err(LanMouseConnectionError::NotConnected)
+    }
+
+    pub(crate) fn supports_clipboard(&self, handle: ClientHandle) -> bool {
+        self.capabilities
+            .borrow()
+            .get(&handle)
+            .map(|capabilities| capabilities & CAP_CLIPBOARD != 0)
+            .unwrap_or(false)
     }
 }
 
@@ -174,6 +187,7 @@ async fn connect_to_handle(
     connecting: Rc<Mutex<HashSet<ClientHandle>>>,
     tx: Sender<(ClientHandle, ProtoEvent)>,
     ping_response: Rc<RefCell<HashSet<SocketAddr>>>,
+    capabilities: Rc<RefCell<HashMap<ClientHandle, u32>>>,
 ) -> Result<(), LanMouseConnectionError> {
     log::info!("client {handle} connecting ...");
     // sending did not work, figure out active conn.
@@ -209,6 +223,7 @@ async fn connect_to_handle(
             conns,
             tx,
             ping_response.clone(),
+            capabilities,
         ));
         return Ok(());
     }
@@ -252,15 +267,24 @@ async fn receive_loop(
     conns: Rc<Mutex<HashMap<SocketAddr, Arc<dyn Conn + Send + Sync>>>>,
     tx: Sender<(ClientHandle, ProtoEvent)>,
     ping_response: Rc<RefCell<HashSet<SocketAddr>>>,
+    capabilities: Rc<RefCell<HashMap<ClientHandle, u32>>>,
 ) {
     let mut buf = [0u8; MAX_EVENT_SIZE];
-    while conn.recv(&mut buf).await.is_ok() {
-        if let Ok(event) = buf.try_into() {
+    while let Ok(len) = conn.recv(&mut buf).await {
+        if let Ok(event) = ProtoEvent::try_from(&buf[..len]) {
             log::trace!("{addr} <==<==<== {event}");
+            if matches!(
+                event,
+                ProtoEvent::Enter { .. } | ProtoEvent::Ack { .. } | ProtoEvent::Pong { .. }
+            ) {
+                capabilities
+                    .borrow_mut()
+                    .insert(handle, event.capabilities());
+            }
             match event {
-                ProtoEvent::Pong(b) => {
+                ProtoEvent::Pong { alive, .. } => {
                     client_manager.set_active_addr(handle, Some(addr));
-                    client_manager.set_alive(handle, b);
+                    client_manager.set_alive(handle, alive);
                     ping_response.borrow_mut().insert(addr);
                 }
                 event => tx.send((handle, event)).expect("channel closed"),
@@ -268,6 +292,7 @@ async fn receive_loop(
         }
     }
     log::warn!("recv error");
+    capabilities.borrow_mut().remove(&handle);
     disconnect(&client_manager, handle, addr, &conns).await;
 }
 

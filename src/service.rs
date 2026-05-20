@@ -65,6 +65,8 @@ pub struct Service {
     capture_status: Status,
     /// status of input emulation (enabled / disabled)
     emulation_status: Status,
+    /// whether clipboard sharing is enabled
+    clipboard_sharing: bool,
     /// keep track of registered connections to avoid duplicate barriers
     incoming_conns: HashSet<SocketAddr>,
     /// map from capture handle to connection info
@@ -101,10 +103,24 @@ impl Service {
         let conn = LanMouseConnection::new(cert.clone(), client_manager.clone());
 
         // input capture + emulation
+        let clipboard_sharing = config.clipboard_sharing();
+        log::info!(
+            "clipboard sharing is {}",
+            if clipboard_sharing {
+                "enabled"
+            } else {
+                "disabled"
+            }
+        );
         let capture_backend = config.capture_backend().map(|b| b.into());
-        let capture = Capture::new(capture_backend, conn, config.release_bind());
+        let capture = Capture::new(
+            capture_backend,
+            conn,
+            config.release_bind(),
+            clipboard_sharing,
+        );
         let emulation_backend = config.emulation_backend().map(|b| b.into());
-        let emulation = Emulation::new(emulation_backend, listener);
+        let emulation = Emulation::new(emulation_backend, listener, clipboard_sharing);
 
         // create dns resolver
         let resolver = DnsResolver::new()?;
@@ -124,6 +140,7 @@ impl Service {
             pending_frontend_events: Default::default(),
             capture_status: Default::default(),
             emulation_status: Default::default(),
+            clipboard_sharing,
             incoming_conn_info: Default::default(),
             incoming_conns: Default::default(),
             next_trigger_handle: 0,
@@ -196,6 +213,10 @@ impl Service {
             }
             FrontendRequest::EnableCapture => self.capture.reenable(),
             FrontendRequest::EnableEmulation => self.emulation.reenable(),
+            FrontendRequest::SetClipboardSharing(enabled) => {
+                self.set_clipboard_sharing(enabled);
+                self.save_config();
+            }
             FrontendRequest::Enumerate() => self.enumerate(),
             FrontendRequest::UpdateFixIps(handle, fix_ips) => {
                 self.update_fix_ips(handle, fix_ips);
@@ -244,6 +265,7 @@ impl Service {
             })
             .collect();
         self.config.set_clients(clients);
+        self.config.set_clipboard_sharing(self.clipboard_sharing);
         let authorized_keys = self.authorized_keys.read().expect("lock").clone();
         self.config.set_authorized_keys(authorized_keys);
         if let Err(e) = self.config.write_back() {
@@ -267,6 +289,7 @@ impl Service {
         }
         let release_bind = self.config.release_bind();
         self.capture.set_release_bind(release_bind);
+        self.set_clipboard_sharing(self.config.clipboard_sharing());
         let authorized_keys = self.config.authorized_fingerprints();
         self.authorized_keys
             .write()
@@ -391,6 +414,7 @@ impl Service {
         self.enumerate();
         self.notify_frontend(FrontendEvent::EmulationStatus(self.emulation_status));
         self.notify_frontend(FrontendEvent::CaptureStatus(self.capture_status));
+        self.notify_frontend(FrontendEvent::ClipboardSharing(self.clipboard_sharing));
         self.notify_frontend(FrontendEvent::PortChanged(self.port, None));
         self.notify_frontend(FrontendEvent::PublicKeyFingerprint(
             self.public_key_fingerprint.clone(),
@@ -485,6 +509,20 @@ impl Service {
         log::info!("added client {handle}");
         let (c, s) = self.client_manager.get_state(handle).unwrap();
         self.notify_frontend(FrontendEvent::Created(handle, c, s));
+    }
+
+    fn set_clipboard_sharing(&mut self, enabled: bool) {
+        if self.clipboard_sharing == enabled {
+            return;
+        }
+        self.clipboard_sharing = enabled;
+        log::info!(
+            "clipboard sharing {}",
+            if enabled { "enabled" } else { "disabled" }
+        );
+        self.capture.set_clipboard_sharing(enabled);
+        self.emulation.set_clipboard_sharing(enabled);
+        self.notify_frontend(FrontendEvent::ClipboardSharing(enabled));
     }
 
     fn set_client_active(&mut self, handle: ClientHandle, active: bool) {

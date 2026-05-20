@@ -9,12 +9,15 @@ use input_capture::{
     CaptureError, CaptureEvent, CaptureHandle, InputCapture, InputCaptureError, Position,
 };
 use input_event::{Event, KeyboardEvent, scancode};
-use lan_mouse_proto::ProtoEvent;
+use lan_mouse_proto::{ProtoEvent, local_capabilities};
 use local_channel::mpsc::{Receiver, Sender, channel};
 use tokio::task::{JoinHandle, spawn_local};
 use tokio_util::sync::CancellationToken;
 
-use crate::connect::LanMouseConnection;
+use crate::{
+    clipboard::{SystemClipboard, encode_clipboard_events},
+    connect::LanMouseConnection,
+};
 
 pub(crate) struct Capture {
     cancellation_token: CancellationToken,
@@ -61,6 +64,8 @@ enum CaptureRequest {
     Reenable,
     /// set release bind
     SetReleaseBind(Vec<scancode::Linux>),
+    /// enable or disable clipboard sharing
+    SetClipboardSharing(bool),
 }
 
 impl Capture {
@@ -68,6 +73,7 @@ impl Capture {
         backend: Option<input_capture::Backend>,
         conn: LanMouseConnection,
         release_bind: Vec<scancode::Linux>,
+        clipboard_sharing: bool,
     ) -> Self {
         let (request_tx, request_rx) = channel();
         let (event_tx, event_rx) = channel();
@@ -80,6 +86,7 @@ impl Capture {
             conn,
             event_tx,
             request_rx,
+            clipboard_sharing: Rc::new(Cell::new(clipboard_sharing)),
             release_bind: Rc::new(RefCell::new(release_bind)),
             state: Default::default(),
         };
@@ -137,6 +144,12 @@ impl Capture {
     pub(crate) fn set_release_bind(&mut self, bind: Vec<scancode::Linux>) {
         let _ = self.request_tx.send(CaptureRequest::SetReleaseBind(bind));
     }
+
+    pub(crate) fn set_clipboard_sharing(&mut self, enabled: bool) {
+        let _ = self
+            .request_tx
+            .send(CaptureRequest::SetClipboardSharing(enabled));
+    }
 }
 
 /// debounce a statement `$st`, i.e. the statement is executed only if the
@@ -161,6 +174,7 @@ struct CaptureTask {
     backend: Option<input_capture::Backend>,
     cancellation_token: CancellationToken,
     captures: Vec<(CaptureHandle, Position, CaptureType)>,
+    clipboard_sharing: Rc<Cell<bool>>,
     conn: LanMouseConnection,
     event_tx: Sender<ICaptureEvent>,
     release_bind: Rc<RefCell<Vec<scancode::Linux>>>,
@@ -216,6 +230,9 @@ impl CaptureTask {
                         CaptureRequest::Release => { /* nothing to do */ }
                         CaptureRequest::SetReleaseBind(bind) => {
                             self.release_bind.borrow_mut().clone_from(&bind);
+                        }
+                        CaptureRequest::SetClipboardSharing(enabled) => {
+                            self.clipboard_sharing.set(enabled);
                         }
                     },
                     _ = self.cancellation_token.cancelled() => return,
@@ -303,9 +320,14 @@ impl CaptureTask {
 
                     match event {
                         // connection acknowlegded => set state to Sending
-                        ProtoEvent::Ack(_) => {
+                        ProtoEvent::Ack { .. } => {
                             log::info!("client {handle} acknowledged the connection!");
-                            self.state = State::Sending;
+                            if self.active_client == Some(handle)
+                                && self.state == State::WaitingForAck
+                            {
+                                self.state = State::Sending;
+                                self.send_clipboard(handle).await;
+                            }
                         }
                         // client disconnected
                         ProtoEvent::Leave(_) => {
@@ -328,6 +350,9 @@ impl CaptureTask {
                     }
                     CaptureRequest::SetReleaseBind(bind) => {
                         self.release_bind.borrow_mut().clone_from(&bind);
+                    }
+                    CaptureRequest::SetClipboardSharing(enabled) => {
+                        self.clipboard_sharing.set(enabled);
                     }
                 },
                 _ = self.cancellation_token.cancelled() => break,
@@ -383,10 +408,16 @@ impl CaptureTask {
         let opposite_pos = to_proto_pos(self.get_pos(handle).opposite());
 
         let event = match event {
-            CaptureEvent::Begin => ProtoEvent::Enter(opposite_pos),
+            CaptureEvent::Begin => ProtoEvent::Enter {
+                pos: opposite_pos,
+                capabilities: local_capabilities(self.clipboard_sharing.get()),
+            },
             CaptureEvent::Input(e) => match self.state {
                 // connection not acknowledged, repeat `Enter` event
-                State::WaitingForAck => ProtoEvent::Enter(opposite_pos),
+                State::WaitingForAck => ProtoEvent::Enter {
+                    pos: opposite_pos,
+                    capabilities: local_capabilities(self.clipboard_sharing.get()),
+                },
                 State::Sending => ProtoEvent::Input(e),
             },
         };
@@ -397,6 +428,41 @@ impl CaptureTask {
             capture.release().await?;
         }
         Ok(())
+    }
+
+    async fn send_clipboard(&self, handle: CaptureHandle) {
+        if !self.clipboard_sharing.get() {
+            log::debug!("clipboard not sent: clipboard sharing is disabled");
+            return;
+        }
+        if !self.conn.supports_clipboard(handle) {
+            log::info!(
+                "clipboard not sent to client {handle}: peer does not advertise clipboard support"
+            );
+            return;
+        }
+        let data = match SystemClipboard::get_plain_text() {
+            Ok(data) => data,
+            Err(e) => {
+                log::debug!("clipboard not sent: {e}");
+                return;
+            }
+        };
+        let events = match encode_clipboard_events(data) {
+            Ok(events) => events,
+            Err(e) => {
+                log::debug!("clipboard not sent: {e}");
+                return;
+            }
+        };
+        let chunk_count = events.len();
+        for event in events {
+            if let Err(e) = self.conn.send(event, handle).await {
+                log::debug!("clipboard chunk not sent to client {handle}: {e}");
+                return;
+            }
+        }
+        log::info!("clipboard sent to client {handle} in {chunk_count} chunk(s)");
     }
 
     async fn release_capture(&mut self, capture: &mut InputCapture) -> Result<(), CaptureError> {

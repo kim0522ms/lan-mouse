@@ -200,6 +200,23 @@
                     </child>
                     <child>
                       <object class="AdwPreferencesGroup">
+                        <property name="title" translatable="yes">Extended</property>
+                        <child>
+                          <object class="AdwActionRow">
+                            <property name="title" translatable="yes">Clipboard sharing</property>
+                            <property name="subtitle" translatable="yes">Share plain text clipboard contents with connected devices</property>
+                            <child type="suffix">
+                              <object class="GtkSwitch" id="clipboard_sharing_switch">
+                                <property name="valign">center</property>
+                                <property name="tooltip-text" translatable="yes">Clipboard sharing</property>
+                              </object>
+                            </child>
+                          </object>
+                        </child>
+                      </object>
+                    </child>
+                    <child>
+                      <object class="AdwPreferencesGroup">
                         <property name="title" translatable="yes">Connections</property>
                         <property name="header-suffix">
                           <object class="GtkButton">
