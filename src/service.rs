@@ -70,6 +70,7 @@ pub struct Service {
     /// map from capture handle to connection info
     incoming_conn_info: HashMap<ClientHandle, Incoming>,
     next_trigger_handle: u64,
+    shutdown_requested: bool,
 }
 
 #[derive(Debug)]
@@ -126,6 +127,7 @@ impl Service {
             incoming_conn_info: Default::default(),
             incoming_conns: Default::default(),
             next_trigger_handle: 0,
+            shutdown_requested: false,
         };
         Ok(service)
     }
@@ -152,6 +154,9 @@ impl Service {
                 event = self.resolver.event() => self.handle_resolver_event(event),
                 _ = self.config.changed() => self.handle_config_change(),
                 r = signal::ctrl_c() => break r.expect("failed to wait for CTRL+C"),
+            }
+            if self.shutdown_requested {
+                break;
             }
         }
 
@@ -218,6 +223,10 @@ impl Service {
                 self.update_enter_hook(handle, enter_hook)
             }
             FrontendRequest::SaveConfiguration => self.save_config(),
+            FrontendRequest::Shutdown => {
+                self.save_config();
+                self.shutdown_requested = true;
+            }
         }
     }
 
@@ -328,7 +337,14 @@ impl Service {
                 // we entered the capture zone for an incoming connection
                 // => notify it that its capture should be released
                 if let Some(incoming) = self.incoming_conn_info.get(&handle) {
+                    log::info!(
+                        "return barrier triggered for incoming {} at {}; sending Leave",
+                        incoming.addr,
+                        incoming.pos
+                    );
                     self.emulation.send_leave_event(incoming.addr);
+                } else {
+                    log::debug!("capture begin for non-incoming handle {handle}");
                 }
             }
             ICaptureEvent::CaptureDisabled => {
@@ -388,6 +404,7 @@ impl Service {
     fn add_incoming(&mut self, addr: SocketAddr, pos: Position, fingerprint: String) {
         let handle = Self::ENTER_HANDLE_BEGIN + self.next_trigger_handle;
         self.next_trigger_handle += 1;
+        log::info!("adding incoming return barrier {handle} for {addr} at {pos}");
         self.capture.create(handle, pos, CaptureType::EnterOnly);
         self.incoming_conns.insert(addr);
         self.incoming_conn_info.insert(

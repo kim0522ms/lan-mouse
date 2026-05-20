@@ -10,11 +10,12 @@
     <property name="default-height">380</property>
     <property name="title" translatable="yes">Add Certificate Fingerprint</property>
     <property name="content">
-      <object class="AdwToolbarView">
-        <child type="top">
+      <object class="GtkBox">
+        <property name="orientation">vertical</property>
+        <child>
             <object class="AdwHeaderBar"/>
         </child>
-        <property name="content">
+        <child>
           <object class="AdwClamp">
             <property name="maximum-size">770</property>
             <property name="tightening-threshold">0</property>
@@ -82,7 +83,6 @@
                       <object class="GtkButton" id="confirm_button">
                         <signal name="clicked" handler="handle_confirm" swapped="true"/>
                         <property name="label" translatable="yes">Confirm</property>
-                        <property name="can-shrink">True</property>
                         <style>
                             <class name="pill"/>
                             <class name="suggested-action"/>
@@ -94,7 +94,7 @@
               </object>
             </property>
           </object>
-        </property>
+        </child>
       </object>
     </property>
   </template>

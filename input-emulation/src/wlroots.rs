@@ -35,6 +35,10 @@ use input_event::{Event, KeyboardEvent, PointerEvent, scancode};
 use super::EmulationHandle;
 use super::error::WaylandBindError;
 
+const WL_SEAT_VERSION: std::ops::RangeInclusive<u32> = 5..=8;
+const WLR_VIRTUAL_POINTER_VERSION: std::ops::RangeInclusive<u32> = 1..=1;
+const VIRTUAL_KEYBOARD_VERSION: std::ops::RangeInclusive<u32> = 1..=1;
+
 struct State {
     keymap: Option<(u32, OwnedFd, u32)>,
     input_for_client: HashMap<EmulationHandle, VirtualInput>,
@@ -58,14 +62,14 @@ impl WlrootsEmulation {
         let qh = queue.handle();
 
         let seat: wl_seat::WlSeat = globals
-            .bind(&qh, 7..=8, ())
-            .map_err(|e| WaylandBindError::new(e, "wl_seat 7..=8"))?;
+            .bind(&qh, WL_SEAT_VERSION, ())
+            .map_err(|e| WaylandBindError::new(e, "wl_seat 5..=8"))?;
 
         let vpm: VpManager = globals
-            .bind(&qh, 1..=1, ())
+            .bind(&qh, WLR_VIRTUAL_POINTER_VERSION, ())
             .map_err(|e| WaylandBindError::new(e, "wlr-virtual-pointer-unstable-v1"))?;
         let vkm: VkManager = globals
-            .bind(&qh, 1..=1, ())
+            .bind(&qh, VIRTUAL_KEYBOARD_VERSION, ())
             .map_err(|e| WaylandBindError::new(e, "virtual-keyboard-unstable-v1"))?;
 
         let input_for_client: HashMap<EmulationHandle, VirtualInput> = HashMap::new();

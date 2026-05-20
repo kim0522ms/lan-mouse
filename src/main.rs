@@ -12,6 +12,7 @@ use lan_mouse_cli::CliError;
 use lan_mouse_gtk::GtkError;
 use lan_mouse_ipc::{IpcError, IpcListenerCreationError};
 use std::{
+    env,
     future::Future,
     io,
     process::{self, Child},
@@ -69,23 +70,29 @@ fn run() -> Result<(), LanMouseError> {
             }
         },
         None => {
-            //  otherwise start the service as a child process and
-            //  run a frontend
+            let gui_only = env::var_os("LAN_MOUSE_NO_SPAWN").is_some();
+
+            // otherwise start the service as a child process and
+            // run a frontend
             #[cfg(feature = "gtk")]
             {
-                let mut service = start_service()?;
-                let res = lan_mouse_gtk::run();
-                #[cfg(unix)]
-                {
-                    // on unix we give the service a chance to terminate gracefully
-                    let pid = service.id() as libc::pid_t;
-                    unsafe {
-                        libc::kill(pid, libc::SIGINT);
+                if gui_only {
+                    lan_mouse_gtk::run()?;
+                } else {
+                    let mut service = start_service()?;
+                    let res = lan_mouse_gtk::run();
+                    #[cfg(unix)]
+                    {
+                        // on unix we give the service a chance to terminate gracefully
+                        let pid = service.id() as libc::pid_t;
+                        unsafe {
+                            libc::kill(pid, libc::SIGINT);
+                        }
+                        service.wait()?;
                     }
-                    service.wait()?;
+                    service.kill()?;
+                    res?;
                 }
-                service.kill()?;
-                res?;
             }
             #[cfg(not(feature = "gtk"))]
             {

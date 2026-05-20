@@ -16,7 +16,7 @@
     <property name="content">
       <object class="GtkBox">
         <property name="orientation">vertical</property>
-        <child type="top">
+        <child>
           <object class="AdwHeaderBar">
             <child type ="end">
               <object class="GtkMenuButton">

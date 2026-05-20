@@ -208,7 +208,10 @@ impl CaptureTask {
                 tokio::select! {
                     r = self.request_rx.recv() => match r.expect("channel closed") {
                         CaptureRequest::Reenable => break,
-                        CaptureRequest::Create(h, p, t) => self.add_capture(h, p, t),
+                        CaptureRequest::Create(h, p, t) => {
+                            self.add_capture(h, p, t);
+                            break;
+                        }
                         CaptureRequest::Destroy(h) => self.remove_capture(h),
                         CaptureRequest::Release => { /* nothing to do */ }
                         CaptureRequest::SetReleaseBind(bind) => {
@@ -222,9 +225,10 @@ impl CaptureTask {
     }
 
     async fn do_capture(&mut self) -> Result<(), InputCaptureError> {
+        let backend = self.backend.or_else(|| self.enter_only_x11_backend());
         /* allow cancelling capture request */
         let mut capture = tokio::select! {
-            r = InputCapture::new(self.backend) => r?,
+            r = InputCapture::new(backend) => r?,
             _ = self.cancellation_token.cancelled() => return Ok(()),
         };
 
@@ -258,6 +262,24 @@ impl CaptureTask {
             }
         }
         Ok(())
+    }
+
+    fn enter_only_x11_backend(&self) -> Option<input_capture::Backend> {
+        let all_enter_only = !self.captures.is_empty()
+            && self
+                .captures
+                .iter()
+                .all(|(_, _, t)| *t == CaptureType::EnterOnly);
+        let x11_session = std::env::var_os("DISPLAY").is_some()
+            && std::env::var("XDG_SESSION_TYPE")
+                .map(|s| s.eq_ignore_ascii_case("x11"))
+                .unwrap_or(false);
+        #[cfg(all(unix, feature = "x11_capture", not(target_os = "macos")))]
+        if all_enter_only && x11_session {
+            log::info!("using X11 edge-only capture for incoming connection return barriers");
+            return Some(input_capture::Backend::X11);
+        }
+        None
     }
 
     async fn do_capture_session(
@@ -322,7 +344,11 @@ impl CaptureTask {
         let (handle, event) = event;
         log::trace!("({handle}): {event:?}");
 
-        if capture.keys_pressed(&self.release_bind.borrow()) {
+        let release_bind_pressed = {
+            let release_bind = self.release_bind.borrow();
+            !release_bind.is_empty() && capture.keys_pressed(&release_bind)
+        };
+        if release_bind_pressed {
             log::info!("releasing capture: release-bind pressed");
             return self.release_capture(capture).await;
         }

@@ -255,6 +255,8 @@ pub enum FrontendRequest {
     UpdateEnterHook(u64, Option<String>),
     /// save config file
     SaveConfiguration,
+    /// stop the background service
+    Shutdown,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]

@@ -441,6 +441,10 @@ impl Window {
         };
     }
 
+    pub(super) fn request_shutdown(&self) {
+        self.request(FrontendRequest::Shutdown);
+    }
+
     pub(super) fn show_toast(&self, msg: &str) {
         let toast = adw::Toast::new(msg);
         self.add_toast(toast);

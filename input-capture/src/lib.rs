@@ -331,8 +331,6 @@ async fn create(
         Backend::InputCapturePortal,
         #[cfg(layer_shell)]
         Backend::LayerShell,
-        #[cfg(x11)]
-        Backend::X11,
         #[cfg(windows)]
         Backend::Windows,
         #[cfg(target_os = "macos")]

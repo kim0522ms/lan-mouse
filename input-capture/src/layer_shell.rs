@@ -70,6 +70,16 @@ use super::{
     error::{LayerShellCaptureCreationError, WaylandBindError},
 };
 
+const WL_COMPOSITOR_VERSION: std::ops::RangeInclusive<u32> = 4..=5;
+const WL_OUTPUT_VERSION: u32 = 4;
+const WL_SEAT_VERSION: std::ops::RangeInclusive<u32> = 5..=8;
+const XDG_OUTPUT_VERSION: std::ops::RangeInclusive<u32> = 1..=3;
+const WL_SHM_VERSION: std::ops::RangeInclusive<u32> = 1..=1;
+const WLR_LAYER_SHELL_VERSION: std::ops::RangeInclusive<u32> = 1..=4;
+const POINTER_CONSTRAINTS_VERSION: std::ops::RangeInclusive<u32> = 1..=1;
+const RELATIVE_POINTER_VERSION: std::ops::RangeInclusive<u32> = 1..=1;
+const SHORTCUT_INHIBIT_VERSION: std::ops::RangeInclusive<u32> = 1..=1;
+
 struct Globals {
     compositor: wl_compositor::WlCompositor,
     pointer_constraints: ZwpPointerConstraintsV1,
@@ -277,32 +287,32 @@ impl LayerShellInputCapture {
         let qh = queue.handle();
 
         let compositor: wl_compositor::WlCompositor = global_list
-            .bind(&qh, 4..=5, ())
+            .bind(&qh, WL_COMPOSITOR_VERSION, ())
             .map_err(|e| WaylandBindError::new(e, "wl_compositor 4..=5"))?;
         let xdg_output_manager: ZxdgOutputManagerV1 = global_list
-            .bind(&qh, 1..=3, ())
+            .bind(&qh, XDG_OUTPUT_VERSION, ())
             .map_err(|e| WaylandBindError::new(e, "xdg_output_manager 1..=3"))?;
         let shm: wl_shm::WlShm = global_list
-            .bind(&qh, 1..=1, ())
+            .bind(&qh, WL_SHM_VERSION, ())
             .map_err(|e| WaylandBindError::new(e, "wl_shm"))?;
         let layer_shell: ZwlrLayerShellV1 = global_list
-            .bind(&qh, 3..=4, ())
-            .map_err(|e| WaylandBindError::new(e, "wlr_layer_shell 3..=4"))?;
+            .bind(&qh, WLR_LAYER_SHELL_VERSION, ())
+            .map_err(|e| WaylandBindError::new(e, "wlr_layer_shell 1..=4"))?;
         let seat: wl_seat::WlSeat = global_list
-            .bind(&qh, 7..=8, ())
-            .map_err(|e| WaylandBindError::new(e, "wl_seat 7..=8"))?;
+            .bind(&qh, WL_SEAT_VERSION, ())
+            .map_err(|e| WaylandBindError::new(e, "wl_seat 5..=8"))?;
 
         let pointer_constraints: ZwpPointerConstraintsV1 = global_list
-            .bind(&qh, 1..=1, ())
+            .bind(&qh, POINTER_CONSTRAINTS_VERSION, ())
             .map_err(|e| WaylandBindError::new(e, "zwp_pointer_constraints_v1"))?;
         let relative_pointer_manager: ZwpRelativePointerManagerV1 = global_list
-            .bind(&qh, 1..=1, ())
+            .bind(&qh, RELATIVE_POINTER_VERSION, ())
             .map_err(|e| WaylandBindError::new(e, "zwp_relative_pointer_manager_v1"))?;
         let shortcut_inhibit_manager: Result<
             ZwpKeyboardShortcutsInhibitManagerV1,
             WaylandBindError,
         > = global_list
-            .bind(&qh, 1..=1, ())
+            .bind(&qh, SHORTCUT_INHIBIT_VERSION, ())
             .map_err(|e| WaylandBindError::new(e, "zwp_keyboard_shortcuts_inhibit_manager_v1"));
         // layer-shell backend still works without this protocol so we make it an optional dependency
         if let Err(e) = &shortcut_inhibit_manager {
@@ -395,7 +405,7 @@ impl State {
             log::debug!("new output global: wl_output {}", global.name);
             let wl_output = self.global_list.registry().bind::<WlOutput, _, _>(
                 global.name,
-                4,
+                WL_OUTPUT_VERSION,
                 &self.qh,
                 global.name,
             );

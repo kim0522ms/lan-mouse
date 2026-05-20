@@ -275,7 +275,50 @@ fn build_ui(app: &Application) {
     ));
 
     #[cfg(not(target_os = "macos"))]
-    window.present();
+    {
+        let app_weak = app.downgrade();
+        window.connect_close_request(move |window| {
+            let app_weak = app_weak.clone();
+            let dialog = gtk::MessageDialog::builder()
+                .transient_for(window)
+                .modal(true)
+                .message_type(gtk::MessageType::Question)
+                .buttons(gtk::ButtonsType::None)
+                .text("Close Lan Mouse?")
+                .secondary_text(
+                    "Keep sharing in the background or stop the background service too?",
+                )
+                .build();
+            dialog.add_button("Cancel", gtk::ResponseType::Cancel);
+            dialog.add_button("Run in Background", gtk::ResponseType::No);
+            dialog.add_button("Quit Completely", gtk::ResponseType::Yes);
+            dialog.set_default_response(gtk::ResponseType::No);
+            dialog.connect_response(clone!(
+                #[weak]
+                window,
+                move |dialog, response| {
+                    dialog.close();
+                    match response {
+                        gtk::ResponseType::Yes => {
+                            window.request_shutdown();
+                            if let Some(app) = app_weak.upgrade() {
+                                app.quit();
+                            }
+                        }
+                        gtk::ResponseType::No => {
+                            if let Some(app) = app_weak.upgrade() {
+                                app.quit();
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            ));
+            dialog.present();
+            glib::Propagation::Stop
+        });
+        window.present();
+    }
 
     // On macOS, default to presenting the main window on every launch
     // so the user gets a visible confirmation that the app is running

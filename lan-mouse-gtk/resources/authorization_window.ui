@@ -13,7 +13,7 @@
       <object class="GtkBox">
         <property name="orientation">vertical</property>
         <property name="vexpand">True</property>
-        <child type="top">
+        <child>
           <object class="AdwHeaderBar">
             <style>
               <class name="flat"/>
@@ -32,7 +32,8 @@
               <object class="GtkLabel">
                 <property name="label">An unauthorized Device is trying to connect. Do you want to authorize this Device?</property>
                 <property name="width-request">100</property>
-                <property name="wrap">word-wrap</property>
+                <property name="wrap">True</property>
+                <property name="wrap-mode">word</property>
               </object>
             </child>
             <child>
@@ -77,7 +78,6 @@
               <object class="GtkButton" id="cancel_button">
                 <signal name="clicked" handler="handle_cancel" swapped="true"/>
                 <property name="label" translatable="yes">Cancel</property>
-                <property name="can-shrink">True</property>
                 <property name="height-request">50</property>
                 <property name="hexpand">True</property>
               </object>
@@ -86,7 +86,6 @@
               <object class="GtkButton" id="confirm_button">
                 <signal name="clicked" handler="handle_confirm" swapped="true"/>
                 <property name="label" translatable="yes">Authorize</property>
-                <property name="can-shrink">True</property>
                 <property name="height-request">50</property>
                 <property name="hexpand">True</property>
                 <style>
