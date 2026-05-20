@@ -1,5 +1,6 @@
 use std::{
     cell::{Cell, RefCell},
+    collections::HashMap,
     rc::Rc,
     time::{Duration, Instant},
 };
@@ -15,7 +16,7 @@ use tokio::task::{JoinHandle, spawn_local};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    clipboard::{SystemClipboard, encode_clipboard_events},
+    clipboard::{ClipboardTransferReceiver, SystemClipboard, encode_clipboard_events},
     connect::LanMouseConnection,
 };
 
@@ -87,6 +88,7 @@ impl Capture {
             event_tx,
             request_rx,
             clipboard_sharing: Rc::new(Cell::new(clipboard_sharing)),
+            clipboard_transfers: Default::default(),
             release_bind: Rc::new(RefCell::new(release_bind)),
             state: Default::default(),
         };
@@ -175,6 +177,7 @@ struct CaptureTask {
     cancellation_token: CancellationToken,
     captures: Vec<(CaptureHandle, Position, CaptureType)>,
     clipboard_sharing: Rc<Cell<bool>>,
+    clipboard_transfers: HashMap<CaptureHandle, ClipboardTransferReceiver>,
     conn: LanMouseConnection,
     event_tx: Sender<ICaptureEvent>,
     release_bind: Rc<RefCell<Vec<scancode::Linux>>>,
@@ -189,6 +192,7 @@ impl CaptureTask {
 
     fn remove_capture(&mut self, handle: CaptureHandle) {
         self.captures.retain(|&(h, ..)| handle != h);
+        self.clipboard_transfers.remove(&handle);
     }
 
     fn is_default_capture_at(&self, pos: Position) -> bool {
@@ -233,6 +237,9 @@ impl CaptureTask {
                         }
                         CaptureRequest::SetClipboardSharing(enabled) => {
                             self.clipboard_sharing.set(enabled);
+                            if !enabled {
+                                self.clipboard_transfers.clear();
+                            }
                         }
                     },
                     _ = self.cancellation_token.cancelled() => return,
@@ -332,8 +339,12 @@ impl CaptureTask {
                         // client disconnected
                         ProtoEvent::Leave(_) => {
                             log::info!("releasing capture: left remote client device region");
+                            self.clipboard_transfers.remove(&handle);
                             self.release_capture(capture).await?;
                         },
+                        ProtoEvent::Clipboard(chunk) => {
+                            self.handle_clipboard(handle, chunk);
+                        }
                         _ => {}
                     }
                 },
@@ -353,12 +364,47 @@ impl CaptureTask {
                     }
                     CaptureRequest::SetClipboardSharing(enabled) => {
                         self.clipboard_sharing.set(enabled);
+                        if !enabled {
+                            self.clipboard_transfers.clear();
+                        }
                     }
                 },
                 _ = self.cancellation_token.cancelled() => break,
             }
         }
         Ok(())
+    }
+
+    fn handle_clipboard(&mut self, handle: CaptureHandle, chunk: lan_mouse_proto::ClipboardData) {
+        if !self.clipboard_sharing.get() {
+            log::debug!(
+                "clipboard not applied from client {handle}: clipboard sharing is disabled"
+            );
+            return;
+        }
+        if !self.conn.supports_clipboard(handle) {
+            log::info!(
+                "clipboard not applied from client {handle}: peer does not advertise clipboard support"
+            );
+            return;
+        }
+        let chunk_count = chunk.chunk_count;
+        let receiver = self.clipboard_transfers.entry(handle).or_default();
+        match receiver.push(chunk) {
+            Ok(Some(data)) => {
+                let mime = data.mime.clone();
+                let byte_count = data.payload.len();
+                if let Err(e) = SystemClipboard::set(data) {
+                    log::debug!("clipboard not applied from client {handle}: {e}");
+                } else {
+                    log::info!(
+                        "clipboard applied from client {handle}: {mime}, {byte_count} byte(s), {chunk_count} chunk(s)"
+                    );
+                }
+            }
+            Ok(None) => {}
+            Err(e) => log::warn!("invalid clipboard transfer from client {handle}: {e}"),
+        }
     }
 
     async fn handle_capture_event(

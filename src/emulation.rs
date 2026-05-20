@@ -1,5 +1,5 @@
 use crate::{
-    clipboard::{ClipboardTransferReceiver, SystemClipboard},
+    clipboard::{ClipboardTransferReceiver, SystemClipboard, encode_clipboard_events},
     listen::{LanMouseListener, ListenEvent, ListenerCreationError},
 };
 use futures::StreamExt;
@@ -235,7 +235,10 @@ impl ListenTask {
                     // reenable emulation
                     EmulationRequest::Reenable => self.emulation_proxy.reenable(),
                     // notify the other end that we hit a barrier (should release capture)
-                    EmulationRequest::Release(addr) => self.listener.reply(addr, ProtoEvent::Leave(0)).await,
+                    EmulationRequest::Release(addr) => {
+                        self.send_clipboard(addr, &peer_capabilities).await;
+                        self.listener.reply(addr, ProtoEvent::Leave(0)).await;
+                    }
                     EmulationRequest::ChangePort(port) => {
                         self.listener.request_port_change(port);
                         let result = self.listener.port_changed().await;
@@ -267,6 +270,39 @@ impl ListenTask {
         }
         self.listener.terminate().await;
         self.emulation_proxy.terminate().await;
+    }
+
+    async fn send_clipboard(&self, addr: SocketAddr, peer_capabilities: &HashMap<SocketAddr, u32>) {
+        if !self.clipboard_sharing.get() {
+            log::debug!("clipboard not sent to {addr}: clipboard sharing is disabled");
+            return;
+        }
+        if peer_capabilities
+            .get(&addr)
+            .is_none_or(|capabilities| capabilities & CAP_CLIPBOARD == 0)
+        {
+            log::info!("clipboard not sent to {addr}: peer does not advertise clipboard support");
+            return;
+        }
+        let data = match SystemClipboard::get_plain_text() {
+            Ok(data) => data,
+            Err(e) => {
+                log::debug!("clipboard not sent to {addr}: {e}");
+                return;
+            }
+        };
+        let events = match encode_clipboard_events(data) {
+            Ok(events) => events,
+            Err(e) => {
+                log::debug!("clipboard not sent to {addr}: {e}");
+                return;
+            }
+        };
+        let chunk_count = events.len();
+        for event in events {
+            self.listener.reply(addr, event).await;
+        }
+        log::info!("clipboard sent to {addr} in {chunk_count} chunk(s)");
     }
 }
 
