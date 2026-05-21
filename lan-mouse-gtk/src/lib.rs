@@ -10,6 +10,8 @@ mod linux_status_item;
 mod macos_privacy;
 #[cfg(target_os = "macos")]
 mod macos_status_item;
+#[cfg(target_os = "macos")]
+mod macos_sync_lock;
 mod window;
 
 use std::{env, process, str};
@@ -200,6 +202,7 @@ fn build_ui(app: &Application) {
             glib::Propagation::Stop
         });
         macos_status_item::setup(app, &window);
+        macos_sync_lock::setup(&window);
         // First-launch TCC prompts. No-op when already granted.
         macos_privacy::fire_initial_prompts();
         // Watch the Accessibility grant continuously for the lifetime
@@ -259,6 +262,7 @@ fn build_ui(app: &Application) {
                     FrontendEvent::SwapOptionCommand(enabled) => {
                         window.set_swap_option_command(enabled)
                     }
+                    FrontendEvent::SyncLock(enabled) => window.set_sync_lock(enabled),
                     FrontendEvent::AuthorizedUpdated(keys) => window.set_authorized_keys(keys),
                     FrontendEvent::PublicKeyFingerprint(fp) => window.set_pk_fp(&fp),
                     FrontendEvent::ConnectionAttempt { fingerprint } => {

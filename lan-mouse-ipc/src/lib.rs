@@ -202,6 +202,8 @@ pub enum FrontendEvent {
     ClipboardSharing(bool),
     /// Option/Command swap preference
     SwapOptionCommand(bool),
+    /// synchronized screen lock preference
+    SyncLock(bool),
     /// authorized public key fingerprints have been updated
     AuthorizedUpdated(HashMap<String, String>),
     /// public key fingerprint of this device
@@ -253,6 +255,10 @@ pub enum FrontendRequest {
     SetClipboardSharing(bool),
     /// enable or disable swapping Option and Command for Linux/Windows peers
     SetSwapOptionCommand(bool),
+    /// enable or disable synchronized screen locking
+    SetSyncLock(bool),
+    /// notify the service that the local session was locked
+    BroadcastSyncLock,
     /// synchronize all state
     Sync,
     /// authorize fingerprint (description, fingerprint)
@@ -317,6 +323,33 @@ mod tests {
     #[test]
     fn set_swap_option_command_request_round_trips_json() {
         let request = FrontendRequest::SetSwapOptionCommand(false);
+        let json = serde_json::to_string(&request).expect("serialize request");
+        let decoded: FrontendRequest = serde_json::from_str(&json).expect("decode request");
+
+        assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn sync_lock_event_round_trips_json() {
+        let event = FrontendEvent::SyncLock(true);
+        let json = serde_json::to_string(&event).expect("serialize event");
+        let decoded: FrontendEvent = serde_json::from_str(&json).expect("decode event");
+
+        assert!(matches!(decoded, FrontendEvent::SyncLock(true)));
+    }
+
+    #[test]
+    fn set_sync_lock_request_round_trips_json() {
+        let request = FrontendRequest::SetSyncLock(false);
+        let json = serde_json::to_string(&request).expect("serialize request");
+        let decoded: FrontendRequest = serde_json::from_str(&json).expect("decode request");
+
+        assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn broadcast_sync_lock_request_round_trips_json() {
+        let request = FrontendRequest::BroadcastSyncLock;
         let json = serde_json::to_string(&request).expect("serialize request");
         let decoded: FrontendRequest = serde_json::from_str(&json).expect("decode request");
 

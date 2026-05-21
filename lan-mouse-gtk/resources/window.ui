@@ -239,6 +239,18 @@
                         </child>
                         <child>
                           <object class="AdwActionRow">
+                            <property name="title" translatable="yes">Sync Lock</property>
+                            <property name="subtitle" translatable="yes">Lock this device when a connected peer locks, and notify peers when this device locks</property>
+                            <child type="suffix">
+                              <object class="GtkSwitch" id="sync_lock_switch">
+                                <property name="valign">center</property>
+                                <property name="tooltip-text" translatable="yes">Sync Lock</property>
+                              </object>
+                            </child>
+                          </object>
+                        </child>
+                        <child>
+                          <object class="AdwActionRow">
                             <property name="title" translatable="yes">Connection diagnostics</property>
                             <property name="subtitle" translatable="yes">Show capture, emulation, clipboard, and peer status</property>
                             <child type="suffix">

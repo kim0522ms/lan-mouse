@@ -12,10 +12,11 @@ pub const MAX_EVENT_SIZE: usize = 1200;
 
 pub const CLIPBOARD_MIME_TEXT: &str = "text/plain;charset=utf-8";
 pub const CAP_CLIPBOARD: u32 = 1 << 0;
+pub const CAP_SYNC_LOCK: u32 = 1 << 1;
 pub const CAP_PLATFORM_LINUX: u32 = 1 << 28;
 pub const CAP_PLATFORM_MACOS: u32 = 1 << 29;
 pub const CAP_PLATFORM_WINDOWS: u32 = 1 << 30;
-pub const LOCAL_CAPABILITIES: u32 = CAP_CLIPBOARD | LOCAL_PLATFORM_CAPABILITY;
+pub const LOCAL_CAPABILITIES: u32 = CAP_CLIPBOARD | CAP_SYNC_LOCK | LOCAL_PLATFORM_CAPABILITY;
 
 #[cfg(target_os = "linux")]
 pub const LOCAL_PLATFORM_CAPABILITY: u32 = CAP_PLATFORM_LINUX;
@@ -34,8 +35,10 @@ pub fn max_clipboard_payload_size(mime: &str) -> usize {
         .saturating_sub(mime.len())
 }
 
-pub fn local_capabilities(clipboard_sharing: bool) -> u32 {
-    LOCAL_PLATFORM_CAPABILITY | if clipboard_sharing { CAP_CLIPBOARD } else { 0 }
+pub fn local_capabilities(clipboard_sharing: bool, sync_lock: bool) -> u32 {
+    LOCAL_PLATFORM_CAPABILITY
+        | if clipboard_sharing { CAP_CLIPBOARD } else { 0 }
+        | if sync_lock { CAP_SYNC_LOCK } else { 0 }
 }
 
 pub fn capabilities_indicate_linux_or_windows(capabilities: u32) -> bool {
@@ -99,6 +102,8 @@ pub enum ProtoEvent {
     Pong { alive: bool, capabilities: u32 },
     /// Clipboard or other shared data payload.
     Clipboard(ClipboardData),
+    /// Request that the peer locks its local login session.
+    Lock,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -133,6 +138,7 @@ impl Display for ProtoEvent {
                 data.chunk_count,
                 data.payload.len()
             ),
+            ProtoEvent::Lock => write!(f, "Lock"),
         }
     }
 }
@@ -152,6 +158,7 @@ pub enum EventType {
     Leave,
     Ack,
     Clipboard,
+    Lock,
 }
 
 impl ProtoEvent {
@@ -175,6 +182,7 @@ impl ProtoEvent {
             ProtoEvent::Leave(_) => EventType::Leave,
             ProtoEvent::Ack { .. } => EventType::Ack,
             ProtoEvent::Clipboard(_) => EventType::Clipboard,
+            ProtoEvent::Lock => EventType::Lock,
         }
     }
 
@@ -271,6 +279,7 @@ impl TryFrom<&[u8]> for ProtoEvent {
                     payload: payload.to_vec(),
                 }))
             }
+            EventType::Lock => Ok(Self::Lock),
         }
     }
 }
@@ -367,6 +376,7 @@ impl From<ProtoEvent> for ([u8; MAX_EVENT_SIZE], usize) {
                     encode_bytes(buf, len, data.mime.as_bytes());
                     encode_bytes(buf, len, &data.payload);
                 }
+                ProtoEvent::Lock => {}
             }
         }
         (buf, len)
@@ -513,16 +523,37 @@ mod tests {
 
     #[test]
     fn local_capabilities_follow_clipboard_toggle() {
-        assert_eq!(local_capabilities(false) & CAP_CLIPBOARD, 0);
-        assert_eq!(local_capabilities(true) & CAP_CLIPBOARD, CAP_CLIPBOARD);
+        assert_eq!(local_capabilities(false, false) & CAP_CLIPBOARD, 0);
+        assert_eq!(
+            local_capabilities(true, false) & CAP_CLIPBOARD,
+            CAP_CLIPBOARD
+        );
+    }
+
+    #[test]
+    fn local_capabilities_follow_sync_lock_toggle() {
+        assert_eq!(local_capabilities(false, false) & CAP_SYNC_LOCK, 0);
+        assert_eq!(
+            local_capabilities(false, true) & CAP_SYNC_LOCK,
+            CAP_SYNC_LOCK
+        );
     }
 
     #[test]
     fn local_capabilities_include_platform() {
         assert_eq!(
-            local_capabilities(false) & LOCAL_PLATFORM_CAPABILITY,
+            local_capabilities(false, false) & LOCAL_PLATFORM_CAPABILITY,
             LOCAL_PLATFORM_CAPABILITY
         );
+    }
+
+    #[test]
+    fn lock_event_round_trips() {
+        let (buf, len) = ProtoEvent::Lock.into();
+        assert!(matches!(
+            ProtoEvent::try_from(&buf[..len]).expect("decode lock"),
+            ProtoEvent::Lock
+        ));
     }
 
     #[test]

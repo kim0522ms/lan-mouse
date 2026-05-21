@@ -7,6 +7,7 @@ use crate::{
     dns::{DnsEvent, DnsResolver},
     emulation::{Emulation, EmulationEvent},
     listen::{LanMouseListener, ListenerCreationError},
+    sync_lock::LockMonitor,
 };
 use futures::StreamExt;
 use hickory_resolver::ResolveError;
@@ -20,6 +21,7 @@ use std::{
     io,
     net::{IpAddr, SocketAddr},
     sync::{Arc, RwLock},
+    time::{Duration, Instant},
 };
 use thiserror::Error;
 use tokio::{process::Command, signal, sync::Notify};
@@ -69,6 +71,12 @@ pub struct Service {
     clipboard_sharing: bool,
     /// whether Option and Command should be swapped for Linux/Windows peers
     swap_option_command: bool,
+    /// whether local session locking should be synchronized with peers
+    sync_lock: bool,
+    /// monitor for local lock events
+    lock_monitor: LockMonitor,
+    /// debounce local lock broadcasts
+    last_lock_broadcast: Option<Instant>,
     /// keep track of registered connections to avoid duplicate barriers
     incoming_conns: HashSet<SocketAddr>,
     /// map from capture handle to connection info
@@ -115,6 +123,7 @@ impl Service {
             }
         );
         let swap_option_command = config.swap_option_command();
+        let sync_lock = config.sync_lock();
         let capture_backend = config.capture_backend().map(|b| b.into());
         let capture = Capture::new(
             capture_backend,
@@ -122,9 +131,10 @@ impl Service {
             config.release_bind(),
             clipboard_sharing,
             swap_option_command,
+            sync_lock,
         );
         let emulation_backend = config.emulation_backend().map(|b| b.into());
-        let emulation = Emulation::new(emulation_backend, listener, clipboard_sharing);
+        let emulation = Emulation::new(emulation_backend, listener, clipboard_sharing, sync_lock);
 
         // create dns resolver
         let resolver = DnsResolver::new()?;
@@ -146,6 +156,9 @@ impl Service {
             emulation_status: Default::default(),
             clipboard_sharing,
             swap_option_command,
+            sync_lock,
+            lock_monitor: LockMonitor::new(),
+            last_lock_broadcast: None,
             incoming_conn_info: Default::default(),
             incoming_conns: Default::default(),
             next_trigger_handle: 0,
@@ -174,6 +187,7 @@ impl Service {
                 event = self.emulation.event() => self.handle_emulation_event(event),
                 event = self.capture.event() => self.handle_capture_event(event),
                 event = self.resolver.event() => self.handle_resolver_event(event),
+                _ = self.lock_monitor.event() => self.handle_local_lock_event(),
                 _ = self.config.changed() => self.handle_config_change(),
                 r = signal::ctrl_c() => break r.expect("failed to wait for CTRL+C"),
             }
@@ -226,6 +240,11 @@ impl Service {
                 self.set_swap_option_command(enabled);
                 self.save_config();
             }
+            FrontendRequest::SetSyncLock(enabled) => {
+                self.set_sync_lock(enabled);
+                self.save_config();
+            }
+            FrontendRequest::BroadcastSyncLock => self.handle_local_lock_event(),
             FrontendRequest::Enumerate() => self.enumerate(),
             FrontendRequest::UpdateFixIps(handle, fix_ips) => {
                 self.update_fix_ips(handle, fix_ips);
@@ -277,6 +296,7 @@ impl Service {
         self.config.set_clipboard_sharing(self.clipboard_sharing);
         self.config
             .set_swap_option_command(self.swap_option_command);
+        self.config.set_sync_lock(self.sync_lock);
         let authorized_keys = self.authorized_keys.read().expect("lock").clone();
         self.config.set_authorized_keys(authorized_keys);
         if let Err(e) = self.config.write_back() {
@@ -302,6 +322,7 @@ impl Service {
         self.capture.set_release_bind(release_bind);
         self.set_clipboard_sharing(self.config.clipboard_sharing());
         self.set_swap_option_command(self.config.swap_option_command());
+        self.set_sync_lock(self.config.sync_lock());
         let authorized_keys = self.config.authorized_fingerprints();
         self.authorized_keys
             .write()
@@ -397,6 +418,23 @@ impl Service {
         }
     }
 
+    fn handle_local_lock_event(&mut self) {
+        if !self.sync_lock {
+            log::debug!("local lock detected, sync lock is disabled");
+            return;
+        }
+        if self
+            .last_lock_broadcast
+            .is_some_and(|instant| instant.elapsed() < Duration::from_secs(2))
+        {
+            return;
+        }
+        self.last_lock_broadcast = Some(Instant::now());
+        log::info!("local session lock detected; notifying connected peers");
+        self.capture.send_lock();
+        self.emulation.send_lock();
+    }
+
     fn handle_resolver_event(&mut self, event: DnsEvent) {
         let handle = match event {
             DnsEvent::Resolving(handle) => {
@@ -428,6 +466,7 @@ impl Service {
         self.notify_frontend(FrontendEvent::CaptureStatus(self.capture_status));
         self.notify_frontend(FrontendEvent::ClipboardSharing(self.clipboard_sharing));
         self.notify_frontend(FrontendEvent::SwapOptionCommand(self.swap_option_command));
+        self.notify_frontend(FrontendEvent::SyncLock(self.sync_lock));
         self.notify_frontend(FrontendEvent::PortChanged(self.port, None));
         self.notify_frontend(FrontendEvent::PublicKeyFingerprint(
             self.public_key_fingerprint.clone(),
@@ -536,6 +575,18 @@ impl Service {
         self.capture.set_clipboard_sharing(enabled);
         self.emulation.set_clipboard_sharing(enabled);
         self.notify_frontend(FrontendEvent::ClipboardSharing(enabled));
+    }
+
+    fn set_sync_lock(&mut self, enabled: bool) {
+        if self.sync_lock == enabled {
+            return;
+        }
+        self.sync_lock = enabled;
+        log::info!("sync lock {}", if enabled { "enabled" } else { "disabled" });
+        self.config.set_sync_lock(enabled);
+        self.capture.set_sync_lock(enabled);
+        self.emulation.set_sync_lock(enabled);
+        self.notify_frontend(FrontendEvent::SyncLock(enabled));
     }
 
     fn set_swap_option_command(&mut self, enabled: bool) {

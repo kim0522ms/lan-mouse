@@ -415,6 +415,15 @@ impl Window {
         self.request(FrontendRequest::SetSwapOptionCommand(enabled));
     }
 
+    pub(super) fn request_sync_lock(&self, enabled: bool) {
+        self.request(FrontendRequest::SetSyncLock(enabled));
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn request_sync_lock_broadcast(&self) {
+        self.request(FrontendRequest::BroadcastSyncLock);
+    }
+
     pub(super) fn request_autostart(&self, enabled: bool) {
         let result = set_autostart(enabled);
         match result {
@@ -530,6 +539,11 @@ impl Window {
             "Option/Command swap",
             enabled_label(self.imp().swap_option_command_switch.is_active()),
         );
+        add_diagnostics_row(
+            &content,
+            "Sync Lock",
+            enabled_label(self.imp().sync_lock_switch.is_active()),
+        );
         add_diagnostics_row(&content, "Port", &self.imp().port.get().to_string());
 
         content.append(&Separator::new(Orientation::Horizontal));
@@ -632,6 +646,18 @@ impl Window {
             switch.set_state(enabled);
         }
         self.imp().swap_option_command_syncing.set(false);
+    }
+
+    pub(super) fn set_sync_lock(&self, enabled: bool) {
+        let switch = self.imp().sync_lock_switch.get();
+        self.imp().sync_lock_syncing.set(true);
+        if switch.is_active() != enabled {
+            switch.set_active(enabled);
+        }
+        if switch.state() != enabled {
+            switch.set_state(enabled);
+        }
+        self.imp().sync_lock_syncing.set(false);
     }
 
     #[cfg(target_os = "macos")]

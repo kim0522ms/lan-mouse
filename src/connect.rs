@@ -2,7 +2,7 @@ use crate::client::ClientManager;
 use lan_mouse_ipc::{ClientHandle, DEFAULT_PORT};
 #[cfg(target_os = "macos")]
 use lan_mouse_proto::capabilities_indicate_linux_or_windows;
-use lan_mouse_proto::{CAP_CLIPBOARD, MAX_EVENT_SIZE, ProtoEvent};
+use lan_mouse_proto::{CAP_CLIPBOARD, CAP_SYNC_LOCK, MAX_EVENT_SIZE, ProtoEvent};
 use local_channel::mpsc::{Receiver, Sender, channel};
 use std::{
     cell::RefCell,
@@ -178,6 +178,18 @@ impl LanMouseConnection {
             .get(&handle)
             .map(|capabilities| capabilities & CAP_CLIPBOARD != 0)
             .unwrap_or(false)
+    }
+
+    pub(crate) fn supports_sync_lock(&self, handle: ClientHandle) -> bool {
+        self.capabilities
+            .borrow()
+            .get(&handle)
+            .map(|capabilities| capabilities & CAP_SYNC_LOCK != 0)
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn active_clients(&self) -> Vec<ClientHandle> {
+        self.client_manager.active_clients()
     }
 
     #[cfg(target_os = "macos")]

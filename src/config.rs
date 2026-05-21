@@ -55,6 +55,7 @@ struct ConfigToml {
     release_bind: Option<Vec<scancode::Linux>>,
     clipboard_sharing: Option<bool>,
     swap_option_command: Option<bool>,
+    sync_lock: Option<bool>,
     cert_path: Option<PathBuf>,
     clients: Option<Vec<TomlClient>>,
     authorized_fingerprints: Option<HashMap<String, String>>,
@@ -516,6 +517,22 @@ impl Config {
             .swap_option_command = Some(enabled);
     }
 
+    /// whether local session locking should be synchronized with peers.
+    pub fn sync_lock(&self) -> bool {
+        self.config_toml
+            .as_ref()
+            .and_then(|c| c.sync_lock)
+            .unwrap_or(false)
+    }
+
+    /// enable or disable synchronized session locking.
+    pub fn set_sync_lock(&mut self, enabled: bool) {
+        if self.config_toml.is_none() {
+            self.config_toml = Some(Default::default());
+        }
+        self.config_toml.as_mut().expect("config").sync_lock = Some(enabled);
+    }
+
     /// set configured clients
     pub fn set_clients(&mut self, clients: Vec<ConfigClient>) {
         if clients.is_empty() {
@@ -615,5 +632,14 @@ mod tests {
         let decoded: ConfigToml = toml::from_str(&serialized).expect("decode config");
 
         assert_eq!(decoded.clipboard_sharing, Some(true));
+    }
+
+    #[test]
+    fn sync_lock_round_trips_through_toml() {
+        let config: ConfigToml = toml::from_str("sync_lock = true").expect("sync lock config");
+        let serialized = toml_edit::ser::to_string_pretty(&config).expect("serialize config");
+        let decoded: ConfigToml = toml::from_str(&serialized).expect("decode config");
+
+        assert_eq!(decoded.sync_lock, Some(true));
     }
 }

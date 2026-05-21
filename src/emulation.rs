@@ -1,11 +1,12 @@
 use crate::{
     clipboard::{ClipboardTransferReceiver, SystemClipboard, encode_clipboard_events},
     listen::{LanMouseListener, ListenEvent, ListenerCreationError},
+    sync_lock,
 };
 use futures::StreamExt;
 use input_emulation::{EmulationHandle, InputEmulation, InputEmulationError};
 use input_event::Event;
-use lan_mouse_proto::{CAP_CLIPBOARD, Position, ProtoEvent, local_capabilities};
+use lan_mouse_proto::{CAP_CLIPBOARD, CAP_SYNC_LOCK, Position, ProtoEvent, local_capabilities};
 use local_channel::mpsc::{Receiver, Sender, channel};
 use std::{
     cell::Cell,
@@ -62,6 +63,8 @@ enum EmulationRequest {
     Release(SocketAddr),
     ChangePort(u16),
     SetClipboardSharing(bool),
+    SetSyncLock(bool),
+    SendLock,
     Terminate,
 }
 
@@ -70,6 +73,7 @@ impl Emulation {
         backend: Option<input_emulation::Backend>,
         listener: LanMouseListener,
         clipboard_sharing: bool,
+        sync_lock: bool,
     ) -> Self {
         let emulation_proxy = EmulationProxy::new(backend);
         let (request_tx, request_rx) = channel();
@@ -78,6 +82,7 @@ impl Emulation {
             listener,
             emulation_proxy,
             clipboard_sharing: Rc::new(Cell::new(clipboard_sharing)),
+            sync_lock: Rc::new(Cell::new(sync_lock)),
             request_rx,
             event_tx,
         };
@@ -113,6 +118,18 @@ impl Emulation {
             .expect("channel closed")
     }
 
+    pub(crate) fn set_sync_lock(&self, enabled: bool) {
+        self.request_tx
+            .send(EmulationRequest::SetSyncLock(enabled))
+            .expect("channel closed")
+    }
+
+    pub(crate) fn send_lock(&self) {
+        self.request_tx
+            .send(EmulationRequest::SendLock)
+            .expect("channel closed")
+    }
+
     pub(crate) async fn event(&mut self) -> EmulationEvent {
         self.event_rx.recv().await.expect("channel closed")
     }
@@ -133,6 +150,7 @@ struct ListenTask {
     listener: LanMouseListener,
     emulation_proxy: EmulationProxy,
     clipboard_sharing: Rc<Cell<bool>>,
+    sync_lock: Rc<Cell<bool>>,
     request_rx: Receiver<EmulationRequest>,
     event_tx: Sender<EmulationEvent>,
 }
@@ -165,15 +183,14 @@ impl ListenTask {
                                         }
                                     }
                                     self.event_tx.send(EmulationEvent::ReleaseNotify).expect("channel closed");
-                                    self.listener.reply(addr, ProtoEvent::Ack { serial: 0, capabilities: local_capabilities(self.clipboard_sharing.get()) }).await;
+                                    self.listener.reply(addr, ProtoEvent::Ack { serial: 0, capabilities: local_capabilities(self.clipboard_sharing.get(), self.sync_lock.get()) }).await;
                                     self.event_tx.send(EmulationEvent::Entered{addr, pos: to_ipc_pos(pos), fingerprint}).expect("channel closed");
                                 }
                             }
                             ProtoEvent::Leave(_) => {
                                 self.emulation_proxy.remove(addr);
-                                peer_capabilities.remove(&addr);
                                 clipboard_transfers.remove(&addr);
-                                self.listener.reply(addr, ProtoEvent::Ack { serial: 0, capabilities: local_capabilities(self.clipboard_sharing.get()) }).await;
+                                self.listener.reply(addr, ProtoEvent::Ack { serial: 0, capabilities: local_capabilities(self.clipboard_sharing.get(), self.sync_lock.get()) }).await;
                             }
                             ProtoEvent::Input(event) => self.emulation_proxy.consume(event, addr),
                             ProtoEvent::Clipboard(chunk) => {
@@ -214,7 +231,8 @@ impl ListenTask {
                             | ProtoEvent::Pong { capabilities, .. } => {
                                 peer_capabilities.insert(addr, capabilities);
                             }
-                            ProtoEvent::Ping => self.listener.reply(addr, ProtoEvent::Pong { alive: self.emulation_proxy.emulation_active.get(), capabilities: local_capabilities(self.clipboard_sharing.get()) }).await,
+                            ProtoEvent::Ping => self.listener.reply(addr, ProtoEvent::Pong { alive: self.emulation_proxy.emulation_active.get(), capabilities: local_capabilities(self.clipboard_sharing.get(), self.sync_lock.get()) }).await,
+                            ProtoEvent::Lock => self.handle_lock(addr, &peer_capabilities),
                         }
                     }
                     Some(ListenEvent::Accept { addr, fingerprint }) => {
@@ -249,6 +267,12 @@ impl ListenTask {
                         if !enabled {
                             clipboard_transfers.clear();
                         }
+                    }
+                    EmulationRequest::SetSyncLock(enabled) => {
+                        self.sync_lock.set(enabled);
+                    }
+                    EmulationRequest::SendLock => {
+                        self.send_lock(&peer_capabilities).await;
                     }
                     EmulationRequest::Terminate => break,
                 },
@@ -303,6 +327,36 @@ impl ListenTask {
             self.listener.reply(addr, event).await;
         }
         log::info!("clipboard sent to {addr} in {chunk_count} chunk(s)");
+    }
+
+    fn handle_lock(&self, addr: SocketAddr, peer_capabilities: &HashMap<SocketAddr, u32>) {
+        if !self.sync_lock.get() {
+            log::debug!("lock not applied from {addr}: sync lock is disabled");
+            return;
+        }
+        if peer_capabilities
+            .get(&addr)
+            .is_none_or(|capabilities| capabilities & CAP_SYNC_LOCK == 0)
+        {
+            log::info!("lock not applied from {addr}: peer does not advertise sync lock support");
+            return;
+        }
+        log::info!("locking local session after sync lock request from {addr}");
+        sync_lock::lock_session();
+    }
+
+    async fn send_lock(&self, peer_capabilities: &HashMap<SocketAddr, u32>) {
+        if !self.sync_lock.get() {
+            log::debug!("lock not sent to incoming peers: sync lock is disabled");
+            return;
+        }
+        for (&addr, &capabilities) in peer_capabilities {
+            if capabilities & CAP_SYNC_LOCK == 0 {
+                continue;
+            }
+            self.listener.reply(addr, ProtoEvent::Lock).await;
+            log::info!("sync lock sent to {addr}");
+        }
     }
 }
 

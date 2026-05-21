@@ -18,6 +18,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     clipboard::{ClipboardTransferReceiver, SystemClipboard, encode_clipboard_events},
     connect::LanMouseConnection,
+    sync_lock,
 };
 
 pub(crate) struct Capture {
@@ -69,6 +70,10 @@ enum CaptureRequest {
     SetClipboardSharing(bool),
     /// swap Option and Command when this macOS host controls Linux/Windows peers
     SetSwapOptionCommand(bool),
+    /// send a synchronized lock request to connected clients
+    SendLock,
+    /// enable or disable synchronized locking
+    SetSyncLock(bool),
 }
 
 impl Capture {
@@ -78,6 +83,7 @@ impl Capture {
         release_bind: Vec<scancode::Linux>,
         clipboard_sharing: bool,
         swap_option_command: bool,
+        sync_lock: bool,
     ) -> Self {
         let (request_tx, request_rx) = channel();
         let (event_tx, event_rx) = channel();
@@ -92,6 +98,7 @@ impl Capture {
             request_rx,
             clipboard_sharing: Rc::new(Cell::new(clipboard_sharing)),
             clipboard_transfers: Default::default(),
+            sync_lock: Rc::new(Cell::new(sync_lock)),
             swap_option_command: Rc::new(Cell::new(swap_option_command)),
             release_bind: Rc::new(RefCell::new(release_bind)),
             state: Default::default(),
@@ -162,6 +169,14 @@ impl Capture {
             .request_tx
             .send(CaptureRequest::SetSwapOptionCommand(enabled));
     }
+
+    pub(crate) fn set_sync_lock(&mut self, enabled: bool) {
+        let _ = self.request_tx.send(CaptureRequest::SetSyncLock(enabled));
+    }
+
+    pub(crate) fn send_lock(&mut self) {
+        let _ = self.request_tx.send(CaptureRequest::SendLock);
+    }
 }
 
 /// debounce a statement `$st`, i.e. the statement is executed only if the
@@ -193,6 +208,7 @@ struct CaptureTask {
     release_bind: Rc<RefCell<Vec<scancode::Linux>>>,
     request_rx: Receiver<CaptureRequest>,
     state: State,
+    sync_lock: Rc<Cell<bool>>,
     swap_option_command: Rc<Cell<bool>>,
 }
 
@@ -255,6 +271,10 @@ impl CaptureTask {
                         CaptureRequest::SetSwapOptionCommand(enabled) => {
                             self.swap_option_command.set(enabled);
                         }
+                        CaptureRequest::SetSyncLock(enabled) => {
+                            self.sync_lock.set(enabled);
+                        }
+                        CaptureRequest::SendLock => self.send_lock_to_clients().await,
                     },
                     _ = self.cancellation_token.cancelled() => return,
                 }
@@ -359,6 +379,7 @@ impl CaptureTask {
                         ProtoEvent::Clipboard(chunk) => {
                             self.handle_clipboard(handle, chunk);
                         }
+                        ProtoEvent::Lock => self.handle_lock(handle),
                         _ => {}
                     }
                 },
@@ -385,11 +406,49 @@ impl CaptureTask {
                     CaptureRequest::SetSwapOptionCommand(enabled) => {
                         self.swap_option_command.set(enabled);
                     }
+                    CaptureRequest::SetSyncLock(enabled) => {
+                        self.sync_lock.set(enabled);
+                    }
+                    CaptureRequest::SendLock => self.send_lock_to_clients().await,
                 },
                 _ = self.cancellation_token.cancelled() => break,
             }
         }
         Ok(())
+    }
+
+    fn handle_lock(&self, handle: CaptureHandle) {
+        if !self.sync_lock.get() {
+            log::debug!("lock not applied from client {handle}: sync lock is disabled");
+            return;
+        }
+        if !self.conn.supports_sync_lock(handle) {
+            log::info!(
+                "lock not applied from client {handle}: peer does not advertise sync lock support"
+            );
+            return;
+        }
+        log::info!("locking local session after sync lock request from client {handle}");
+        sync_lock::lock_session();
+    }
+
+    async fn send_lock_to_clients(&self) {
+        if !self.sync_lock.get() {
+            log::debug!("lock not sent to clients: sync lock is disabled");
+            return;
+        }
+
+        for handle in self.conn.active_clients() {
+            if !self.conn.supports_sync_lock(handle) {
+                log::debug!("lock not sent to client {handle}: sync lock not negotiated");
+                continue;
+            }
+            if let Err(e) = self.conn.send(ProtoEvent::Lock, handle).await {
+                log::warn!("failed to send sync lock to client {handle}: {e}");
+            } else {
+                log::info!("sync lock sent to client {handle}");
+            }
+        }
     }
 
     fn handle_clipboard(&mut self, handle: CaptureHandle, chunk: lan_mouse_proto::ClipboardData) {
@@ -473,13 +532,19 @@ impl CaptureTask {
         let event = match event {
             CaptureEvent::Begin => ProtoEvent::Enter {
                 pos: opposite_pos,
-                capabilities: local_capabilities(self.clipboard_sharing.get()),
+                capabilities: local_capabilities(
+                    self.clipboard_sharing.get(),
+                    self.sync_lock.get(),
+                ),
             },
             CaptureEvent::Input(e) => match self.state {
                 // connection not acknowledged, repeat `Enter` event
                 State::WaitingForAck => ProtoEvent::Enter {
                     pos: opposite_pos,
-                    capabilities: local_capabilities(self.clipboard_sharing.get()),
+                    capabilities: local_capabilities(
+                        self.clipboard_sharing.get(),
+                        self.sync_lock.get(),
+                    ),
                 },
                 State::Sending => ProtoEvent::Input(self.map_outgoing_event(handle, e)),
             },
