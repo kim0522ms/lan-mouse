@@ -1,6 +1,10 @@
 mod imp;
 
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    env, fs, io,
+    path::{Path, PathBuf},
+};
 
 use adw::prelude::*;
 use adw::subclass::prelude::*;
@@ -407,6 +411,21 @@ impl Window {
         self.request(FrontendRequest::SetClipboardSharing(enabled));
     }
 
+    pub(super) fn request_autostart(&self, enabled: bool) {
+        let result = set_autostart(enabled);
+        match result {
+            Ok(()) => self.set_autostart(enabled),
+            Err(e) => {
+                self.sync_autostart_state();
+                self.show_toast(format!("autostart update failed: {e}").as_str());
+            }
+        }
+    }
+
+    pub(super) fn sync_autostart_state(&self) {
+        self.set_autostart(autostart_enabled());
+    }
+
     pub(super) fn note_event(&self, event: impl Into<String>) {
         self.imp().last_event.replace(event.into());
     }
@@ -497,6 +516,11 @@ impl Window {
             "Clipboard",
             enabled_label(self.imp().clipboard_sharing_switch.is_active()),
         );
+        add_diagnostics_row(
+            &content,
+            "Autostart",
+            enabled_label(self.imp().autostart_switch.is_active()),
+        );
         add_diagnostics_row(&content, "Port", &self.imp().port.get().to_string());
 
         content.append(&Separator::new(Orientation::Horizontal));
@@ -575,6 +599,18 @@ impl Window {
             switch.set_state(enabled);
         }
         self.imp().clipboard_sharing_syncing.set(false);
+    }
+
+    fn set_autostart(&self, enabled: bool) {
+        let switch = self.imp().autostart_switch.get();
+        self.imp().autostart_syncing.set(true);
+        if switch.is_active() != enabled {
+            switch.set_active(enabled);
+        }
+        if switch.state() != enabled {
+            switch.set_state(enabled);
+        }
+        self.imp().autostart_syncing.set(false);
     }
 
     #[cfg(target_os = "macos")]
@@ -701,4 +737,161 @@ fn add_diagnostics_row(content: &GtkBox, name: &str, value: &str) {
     row.append(&name_label);
     row.append(&value_label);
     content.append(&row);
+}
+
+fn autostart_enabled() -> bool {
+    let Some(path) = autostart_file() else {
+        return false;
+    };
+    if !path.exists() {
+        return false;
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        fs::read_to_string(path)
+            .map(|content| !desktop_entry_hidden(&content))
+            .unwrap_or(false)
+    }
+
+    #[cfg(any(target_os = "macos", windows))]
+    {
+        true
+    }
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn desktop_entry_hidden(content: &str) -> bool {
+    content.lines().any(|line| {
+        let line = line.trim();
+        line.eq_ignore_ascii_case("Hidden=true")
+    })
+}
+
+fn set_autostart(enabled: bool) -> io::Result<()> {
+    let Some(path) = autostart_file() else {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "could not determine config directory",
+        ));
+    };
+
+    if enabled {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(path, autostart_entry()?)
+    } else {
+        match fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn autostart_file() -> Option<PathBuf> {
+    let config_home = env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("HOME").map(|home| Path::new(&home).join(".config")))?;
+    Some(
+        config_home
+            .join("autostart")
+            .join("de.feschber.LanMouse.desktop"),
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn autostart_file() -> Option<PathBuf> {
+    env::var_os("HOME").map(|home| {
+        Path::new(&home)
+            .join("Library")
+            .join("LaunchAgents")
+            .join("de.feschber.LanMouse.plist")
+    })
+}
+
+#[cfg(windows)]
+fn autostart_file() -> Option<PathBuf> {
+    env::var_os("APPDATA").map(|appdata| {
+        Path::new(&appdata)
+            .join("Microsoft")
+            .join("Windows")
+            .join("Start Menu")
+            .join("Programs")
+            .join("Startup")
+            .join("Lan Mouse Ex.cmd")
+    })
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn autostart_entry() -> io::Result<String> {
+    let exe = env::current_exe()?;
+    Ok(format!(
+        "[Desktop Entry]\n\
+         Type=Application\n\
+         Name=Lan Mouse Ex\n\
+         Comment=Mouse & Keyboard sharing via LAN\n\
+         Exec={}\n\
+         TryExec={}\n\
+         Icon=de.feschber.LanMouse\n\
+         Terminal=false\n\
+         StartupNotify=true\n\
+         X-GNOME-Autostart-enabled=true\n",
+        desktop_exec_path(&exe),
+        exe.display()
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn autostart_entry() -> io::Result<String> {
+    let exe = env::current_exe()?;
+    Ok(format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+         <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+         <plist version=\"1.0\">\n\
+         <dict>\n\
+         <key>Label</key>\n\
+         <string>de.feschber.LanMouse</string>\n\
+         <key>ProgramArguments</key>\n\
+         <array>\n\
+         <string>{}</string>\n\
+         </array>\n\
+         <key>RunAtLoad</key>\n\
+         <true/>\n\
+         </dict>\n\
+         </plist>\n",
+        xml_escape(&exe.to_string_lossy())
+    ))
+}
+
+#[cfg(windows)]
+fn autostart_entry() -> io::Result<String> {
+    let exe = env::current_exe()?;
+    Ok(format!(
+        "@echo off\r\n\
+         start \"Lan Mouse Ex\" \"{}\"\r\n",
+        exe.to_string_lossy().replace('"', "\"\"")
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn desktop_exec_path(path: &Path) -> String {
+    let path = path.to_string_lossy();
+    if path.contains(char::is_whitespace) {
+        format!("\"{}\"", path.replace('\\', "\\\\").replace('"', "\\\""))
+    } else {
+        path.into_owned()
+    }
 }
