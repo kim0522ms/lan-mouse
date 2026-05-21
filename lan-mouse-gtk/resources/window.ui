@@ -11,7 +11,7 @@
   <template class="LanMouseWindow" parent="AdwApplicationWindow">
     <property name="width-request">600</property>
     <property name="height-request">700</property>
-    <property name="title" translatable="yes">Lan Mouse</property>
+    <property name="title" translatable="yes">Lan Mouse Ex</property>
     <property name="show-menubar">True</property>
     <property name="content">
       <object class="GtkBox">
@@ -33,7 +33,7 @@
           <object class="AdwToastOverlay" id="toast_overlay">
             <child>
               <object class="AdwStatusPage">
-                <property name="title" translatable="yes">Lan Mouse</property>
+                <property name="title" translatable="yes">Lan Mouse Ex</property>
                 <property name="description" translatable="yes">easily use your mouse and keyboard on multiple computers</property>
                 <property name="icon-name">de.feschber.LanMouse</property>
                 <property name="child">
@@ -209,6 +209,24 @@
                               <object class="GtkSwitch" id="clipboard_sharing_switch">
                                 <property name="valign">center</property>
                                 <property name="tooltip-text" translatable="yes">Clipboard sharing</property>
+                              </object>
+                            </child>
+                          </object>
+                        </child>
+                        <child>
+                          <object class="AdwActionRow">
+                            <property name="title" translatable="yes">Connection diagnostics</property>
+                            <property name="subtitle" translatable="yes">Show capture, emulation, clipboard, and peer status</property>
+                            <child type="suffix">
+                              <object class="GtkButton" id="diagnostics_button">
+                                <property name="valign">center</property>
+                                <signal name="clicked" handler="handle_diagnostics" swapped="true"/>
+                                <child>
+                                  <object class="AdwButtonContent">
+                                    <property name="icon-name">dialog-warning-symbolic</property>
+                                    <property name="label" translatable="yes">Open</property>
+                                  </object>
+                                </child>
                               </object>
                             </child>
                           </object>

@@ -243,7 +243,10 @@ fn build_ui(app: &Application) {
                         window.update_client_state(handle, state);
                     }
                     FrontendEvent::NoSuchClient(_) => {}
-                    FrontendEvent::Error(e) => window.show_toast(e.as_str()),
+                    FrontendEvent::Error(e) => {
+                        window.note_event(format!("error: {e}"));
+                        window.show_toast(e.as_str());
+                    }
                     FrontendEvent::Enumerate(clients) => window.update_client_list(clients),
                     FrontendEvent::PortChanged(port, msg) => window.update_port(port, msg),
                     FrontendEvent::CaptureStatus(s) => window.set_capture(s.into()),
@@ -254,12 +257,14 @@ fn build_ui(app: &Application) {
                     FrontendEvent::AuthorizedUpdated(keys) => window.set_authorized_keys(keys),
                     FrontendEvent::PublicKeyFingerprint(fp) => window.set_pk_fp(&fp),
                     FrontendEvent::ConnectionAttempt { fingerprint } => {
+                        window.note_event(format!("authorization requested: {fingerprint}"));
                         window.request_authorization(&fingerprint);
                     }
                     FrontendEvent::DeviceConnected {
                         fingerprint: _,
                         addr,
                     } => {
+                        window.note_event(format!("device connected: {addr}"));
                         window.show_toast(format!("device connected: {addr}").as_str());
                     }
                     FrontendEvent::DeviceEntered {
@@ -267,9 +272,11 @@ fn build_ui(app: &Application) {
                         addr,
                         pos,
                     } => {
+                        window.note_event(format!("device entered: {addr} ({pos})"));
                         window.show_toast(format!("device entered: {addr} ({pos})").as_str());
                     }
                     FrontendEvent::IncomingDisconnected(addr) => {
+                        window.note_event(format!("{addr} disconnected"));
                         window.show_toast(format!("{addr} disconnected").as_str());
                     }
                 }

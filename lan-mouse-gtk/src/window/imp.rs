@@ -46,6 +46,8 @@ pub struct Window {
     #[template_child]
     pub clipboard_sharing_switch: TemplateChild<Switch>,
     #[template_child]
+    pub diagnostics_button: TemplateChild<Button>,
+    #[template_child]
     pub authorized_list: TemplateChild<ListBox>,
     pub clients: RefCell<Option<gio::ListStore>>,
     pub authorized: RefCell<Option<gio::ListStore>>,
@@ -54,6 +56,7 @@ pub struct Window {
     pub capture_active: Cell<bool>,
     pub emulation_active: Cell<bool>,
     pub clipboard_sharing_syncing: Cell<bool>,
+    pub last_event: RefCell<String>,
     pub authorization_window: RefCell<Option<AuthorizationWindow>>,
 }
 
@@ -177,6 +180,11 @@ impl Window {
     #[template_callback]
     fn handle_add_cert_fingerprint(&self, _button: &Button) {
         self.obj().open_fingerprint_dialog(None);
+    }
+
+    #[template_callback]
+    fn handle_diagnostics(&self, _button: &Button) {
+        self.obj().show_diagnostics();
     }
 
     pub fn set_port(&self, port: u16) {

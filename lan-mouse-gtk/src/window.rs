@@ -6,7 +6,7 @@ use adw::prelude::*;
 use adw::subclass::prelude::*;
 use glib::{Object, clone};
 use gtk::{
-    NoSelection, gio,
+    Align, Box as GtkBox, Label, NoSelection, Orientation, Separator, Window as GtkWindow, gio,
     glib::{self, closure_local},
 };
 
@@ -407,6 +407,10 @@ impl Window {
         self.request(FrontendRequest::SetClipboardSharing(enabled));
     }
 
+    pub(super) fn note_event(&self, event: impl Into<String>) {
+        self.imp().last_event.replace(event.into());
+    }
+
     fn request_client_create(&self) {
         self.request(FrontendRequest::Create);
     }
@@ -457,6 +461,98 @@ impl Window {
     pub(super) fn add_toast(&self, toast: adw::Toast) {
         let toast_overlay = &self.imp().toast_overlay;
         toast_overlay.add_toast(toast);
+    }
+
+    pub(super) fn show_diagnostics(&self) {
+        let dialog = GtkWindow::builder()
+            .title("Connection Diagnostics")
+            .modal(true)
+            .transient_for(self)
+            .default_width(460)
+            .build();
+
+        let content = GtkBox::new(Orientation::Vertical, 12);
+        content.set_margin_top(18);
+        content.set_margin_bottom(18);
+        content.set_margin_start(18);
+        content.set_margin_end(18);
+
+        let title = Label::new(Some("Connection Diagnostics"));
+        title.set_xalign(0.0);
+        title.add_css_class("title-2");
+        content.append(&title);
+
+        add_diagnostics_row(
+            &content,
+            "Capture",
+            enabled_label(self.imp().capture_active.get()),
+        );
+        add_diagnostics_row(
+            &content,
+            "Emulation",
+            enabled_label(self.imp().emulation_active.get()),
+        );
+        add_diagnostics_row(
+            &content,
+            "Clipboard",
+            enabled_label(self.imp().clipboard_sharing_switch.is_active()),
+        );
+        add_diagnostics_row(&content, "Port", &self.imp().port.get().to_string());
+
+        content.append(&Separator::new(Orientation::Horizontal));
+
+        let clients = self.clients();
+        add_diagnostics_row(&content, "Configured peers", &clients.n_items().to_string());
+        for client in clients
+            .iter::<ClientObject>()
+            .filter_map(Result::ok)
+            .take(5)
+        {
+            let data = client.get_data();
+            let name = data
+                .hostname
+                .filter(|hostname| !hostname.is_empty())
+                .unwrap_or_else(|| format!("client {}", data.handle));
+            let ips = if data.ips.is_empty() {
+                "unresolved".to_owned()
+            } else {
+                data.ips.join(", ")
+            };
+            let state = if data.active { "active" } else { "inactive" };
+            add_diagnostics_row(
+                &content,
+                &name,
+                &format!("{state}, {}, {ips}", data.position),
+            );
+        }
+
+        add_diagnostics_row(
+            &content,
+            "Authorized peers",
+            &self.authorized().n_items().to_string(),
+        );
+        let last_event = self.imp().last_event.borrow();
+        add_diagnostics_row(
+            &content,
+            "Last event",
+            if last_event.is_empty() {
+                "none"
+            } else {
+                last_event.as_str()
+            },
+        );
+
+        let close_button = gtk::Button::with_label("Close");
+        close_button.set_halign(Align::End);
+        close_button.connect_clicked(clone!(
+            #[weak]
+            dialog,
+            move |_| dialog.close()
+        ));
+        content.append(&close_button);
+
+        dialog.set_child(Some(&content));
+        dialog.present();
     }
 
     pub(super) fn set_capture(&self, active: bool) {
@@ -582,4 +678,27 @@ impl Window {
         window.present();
         self.imp().authorization_window.replace(Some(window));
     }
+}
+
+fn enabled_label(enabled: bool) -> &'static str {
+    if enabled { "enabled" } else { "disabled" }
+}
+
+fn add_diagnostics_row(content: &GtkBox, name: &str, value: &str) {
+    let row = GtkBox::new(Orientation::Horizontal, 12);
+
+    let name_label = Label::new(Some(name));
+    name_label.set_xalign(0.0);
+    name_label.set_hexpand(true);
+    name_label.add_css_class("dim-label");
+
+    let value_label = Label::new(Some(value));
+    value_label.set_xalign(1.0);
+    value_label.set_selectable(true);
+    value_label.set_wrap(true);
+    value_label.set_max_width_chars(32);
+
+    row.append(&name_label);
+    row.append(&value_label);
+    content.append(&row);
 }
