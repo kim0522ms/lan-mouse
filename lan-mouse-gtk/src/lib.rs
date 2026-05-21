@@ -4,6 +4,8 @@ mod client_row;
 mod fingerprint_window;
 mod key_object;
 mod key_row;
+#[cfg(all(unix, not(target_os = "macos")))]
+mod linux_status_item;
 #[cfg(target_os = "macos")]
 mod macos_privacy;
 #[cfg(target_os = "macos")]
@@ -289,6 +291,11 @@ fn build_ui(app: &Application) {
 
     #[cfg(not(target_os = "macos"))]
     {
+        #[cfg(all(unix, not(target_os = "macos")))]
+        let status_item_available = linux_status_item::setup(app, &window);
+        #[cfg(not(all(unix, not(target_os = "macos"))))]
+        let status_item_available = false;
+
         let app_weak = app.downgrade();
         window.connect_close_request(move |window| {
             let app_weak = app_weak.clone();
@@ -319,7 +326,9 @@ fn build_ui(app: &Application) {
                             }
                         }
                         gtk::ResponseType::No => {
-                            if let Some(app) = app_weak.upgrade() {
+                            if status_item_available {
+                                window.set_visible(false);
+                            } else if let Some(app) = app_weak.upgrade() {
                                 app.quit();
                             }
                         }
