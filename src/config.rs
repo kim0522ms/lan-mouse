@@ -54,6 +54,7 @@ struct ConfigToml {
     port: Option<u16>,
     release_bind: Option<Vec<scancode::Linux>>,
     clipboard_sharing: Option<bool>,
+    swap_option_command: Option<bool>,
     cert_path: Option<PathBuf>,
     clients: Option<Vec<TomlClient>>,
     authorized_fingerprints: Option<HashMap<String, String>>,
@@ -494,6 +495,25 @@ impl Config {
             self.config_toml = Some(Default::default());
         }
         self.config_toml.as_mut().expect("config").clipboard_sharing = Some(enabled);
+    }
+
+    /// whether Option and Command should be swapped for Linux/Windows peers.
+    pub fn swap_option_command(&self) -> bool {
+        self.config_toml
+            .as_ref()
+            .and_then(|c| c.swap_option_command)
+            .unwrap_or(false)
+    }
+
+    /// enable or disable Option/Command swapping for Linux/Windows peers.
+    pub fn set_swap_option_command(&mut self, enabled: bool) {
+        if self.config_toml.is_none() {
+            self.config_toml = Some(Default::default());
+        }
+        self.config_toml
+            .as_mut()
+            .expect("config")
+            .swap_option_command = Some(enabled);
     }
 
     /// set configured clients

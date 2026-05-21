@@ -12,7 +12,19 @@ pub const MAX_EVENT_SIZE: usize = 1200;
 
 pub const CLIPBOARD_MIME_TEXT: &str = "text/plain;charset=utf-8";
 pub const CAP_CLIPBOARD: u32 = 1 << 0;
-pub const LOCAL_CAPABILITIES: u32 = CAP_CLIPBOARD;
+pub const CAP_PLATFORM_LINUX: u32 = 1 << 28;
+pub const CAP_PLATFORM_MACOS: u32 = 1 << 29;
+pub const CAP_PLATFORM_WINDOWS: u32 = 1 << 30;
+pub const LOCAL_CAPABILITIES: u32 = CAP_CLIPBOARD | LOCAL_PLATFORM_CAPABILITY;
+
+#[cfg(target_os = "linux")]
+pub const LOCAL_PLATFORM_CAPABILITY: u32 = CAP_PLATFORM_LINUX;
+#[cfg(target_os = "macos")]
+pub const LOCAL_PLATFORM_CAPABILITY: u32 = CAP_PLATFORM_MACOS;
+#[cfg(target_os = "windows")]
+pub const LOCAL_PLATFORM_CAPABILITY: u32 = CAP_PLATFORM_WINDOWS;
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+pub const LOCAL_PLATFORM_CAPABILITY: u32 = 0;
 
 const CLIPBOARD_HEADER_SIZE: usize = size_of::<u8>() + size_of::<u32>() + 4 * size_of::<u16>();
 
@@ -23,7 +35,11 @@ pub fn max_clipboard_payload_size(mime: &str) -> usize {
 }
 
 pub fn local_capabilities(clipboard_sharing: bool) -> u32 {
-    if clipboard_sharing { CAP_CLIPBOARD } else { 0 }
+    LOCAL_PLATFORM_CAPABILITY | if clipboard_sharing { CAP_CLIPBOARD } else { 0 }
+}
+
+pub fn capabilities_indicate_linux_or_windows(capabilities: u32) -> bool {
+    capabilities & (CAP_PLATFORM_LINUX | CAP_PLATFORM_WINDOWS) != 0
 }
 
 /// error type for protocol violations
@@ -497,8 +513,16 @@ mod tests {
 
     #[test]
     fn local_capabilities_follow_clipboard_toggle() {
-        assert_eq!(local_capabilities(false), 0);
+        assert_eq!(local_capabilities(false) & CAP_CLIPBOARD, 0);
         assert_eq!(local_capabilities(true) & CAP_CLIPBOARD, CAP_CLIPBOARD);
+    }
+
+    #[test]
+    fn local_capabilities_include_platform() {
+        assert_eq!(
+            local_capabilities(false) & LOCAL_PLATFORM_CAPABILITY,
+            LOCAL_PLATFORM_CAPABILITY
+        );
     }
 
     #[test]

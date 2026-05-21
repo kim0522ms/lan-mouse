@@ -67,6 +67,8 @@ pub struct Service {
     emulation_status: Status,
     /// whether clipboard sharing is enabled
     clipboard_sharing: bool,
+    /// whether Option and Command should be swapped for Linux/Windows peers
+    swap_option_command: bool,
     /// keep track of registered connections to avoid duplicate barriers
     incoming_conns: HashSet<SocketAddr>,
     /// map from capture handle to connection info
@@ -112,12 +114,14 @@ impl Service {
                 "disabled"
             }
         );
+        let swap_option_command = config.swap_option_command();
         let capture_backend = config.capture_backend().map(|b| b.into());
         let capture = Capture::new(
             capture_backend,
             conn,
             config.release_bind(),
             clipboard_sharing,
+            swap_option_command,
         );
         let emulation_backend = config.emulation_backend().map(|b| b.into());
         let emulation = Emulation::new(emulation_backend, listener, clipboard_sharing);
@@ -141,6 +145,7 @@ impl Service {
             capture_status: Default::default(),
             emulation_status: Default::default(),
             clipboard_sharing,
+            swap_option_command,
             incoming_conn_info: Default::default(),
             incoming_conns: Default::default(),
             next_trigger_handle: 0,
@@ -217,6 +222,10 @@ impl Service {
                 self.set_clipboard_sharing(enabled);
                 self.save_config();
             }
+            FrontendRequest::SetSwapOptionCommand(enabled) => {
+                self.set_swap_option_command(enabled);
+                self.save_config();
+            }
             FrontendRequest::Enumerate() => self.enumerate(),
             FrontendRequest::UpdateFixIps(handle, fix_ips) => {
                 self.update_fix_ips(handle, fix_ips);
@@ -266,6 +275,8 @@ impl Service {
             .collect();
         self.config.set_clients(clients);
         self.config.set_clipboard_sharing(self.clipboard_sharing);
+        self.config
+            .set_swap_option_command(self.swap_option_command);
         let authorized_keys = self.authorized_keys.read().expect("lock").clone();
         self.config.set_authorized_keys(authorized_keys);
         if let Err(e) = self.config.write_back() {
@@ -290,6 +301,7 @@ impl Service {
         let release_bind = self.config.release_bind();
         self.capture.set_release_bind(release_bind);
         self.set_clipboard_sharing(self.config.clipboard_sharing());
+        self.set_swap_option_command(self.config.swap_option_command());
         let authorized_keys = self.config.authorized_fingerprints();
         self.authorized_keys
             .write()
@@ -415,6 +427,7 @@ impl Service {
         self.notify_frontend(FrontendEvent::EmulationStatus(self.emulation_status));
         self.notify_frontend(FrontendEvent::CaptureStatus(self.capture_status));
         self.notify_frontend(FrontendEvent::ClipboardSharing(self.clipboard_sharing));
+        self.notify_frontend(FrontendEvent::SwapOptionCommand(self.swap_option_command));
         self.notify_frontend(FrontendEvent::PortChanged(self.port, None));
         self.notify_frontend(FrontendEvent::PublicKeyFingerprint(
             self.public_key_fingerprint.clone(),
@@ -523,6 +536,20 @@ impl Service {
         self.capture.set_clipboard_sharing(enabled);
         self.emulation.set_clipboard_sharing(enabled);
         self.notify_frontend(FrontendEvent::ClipboardSharing(enabled));
+    }
+
+    fn set_swap_option_command(&mut self, enabled: bool) {
+        if self.swap_option_command == enabled {
+            return;
+        }
+        self.swap_option_command = enabled;
+        log::info!(
+            "Option/Command swap {}",
+            if enabled { "enabled" } else { "disabled" }
+        );
+        self.config.set_swap_option_command(enabled);
+        self.capture.set_swap_option_command(enabled);
+        self.notify_frontend(FrontendEvent::SwapOptionCommand(enabled));
     }
 
     fn set_client_active(&mut self, handle: ClientHandle, active: bool) {

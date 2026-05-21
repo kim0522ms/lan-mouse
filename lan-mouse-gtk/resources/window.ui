@@ -227,6 +227,18 @@
                         </child>
                         <child>
                           <object class="AdwActionRow">
+                            <property name="title" translatable="yes">Swap Option and Command</property>
+                            <property name="subtitle" translatable="yes">When this Mac controls Linux or Windows peers</property>
+                            <child type="suffix">
+                              <object class="GtkSwitch" id="swap_option_command_switch">
+                                <property name="valign">center</property>
+                                <property name="tooltip-text" translatable="yes">Swap Option and Command</property>
+                              </object>
+                            </child>
+                          </object>
+                        </child>
+                        <child>
+                          <object class="AdwActionRow">
                             <property name="title" translatable="yes">Connection diagnostics</property>
                             <property name="subtitle" translatable="yes">Show capture, emulation, clipboard, and peer status</property>
                             <child type="suffix">

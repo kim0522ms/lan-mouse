@@ -1,5 +1,7 @@
 use crate::client::ClientManager;
 use lan_mouse_ipc::{ClientHandle, DEFAULT_PORT};
+#[cfg(target_os = "macos")]
+use lan_mouse_proto::capabilities_indicate_linux_or_windows;
 use lan_mouse_proto::{CAP_CLIPBOARD, MAX_EVENT_SIZE, ProtoEvent};
 use local_channel::mpsc::{Receiver, Sender, channel};
 use std::{
@@ -175,6 +177,15 @@ impl LanMouseConnection {
             .borrow()
             .get(&handle)
             .map(|capabilities| capabilities & CAP_CLIPBOARD != 0)
+            .unwrap_or(false)
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(crate) fn peer_is_linux_or_windows(&self, handle: ClientHandle) -> bool {
+        self.capabilities
+            .borrow()
+            .get(&handle)
+            .map(|capabilities| capabilities_indicate_linux_or_windows(*capabilities))
             .unwrap_or(false)
     }
 }

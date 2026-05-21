@@ -200,6 +200,8 @@ pub enum FrontendEvent {
     EmulationStatus(Status),
     /// clipboard sharing preference
     ClipboardSharing(bool),
+    /// Option/Command swap preference
+    SwapOptionCommand(bool),
     /// authorized public key fingerprints have been updated
     AuthorizedUpdated(HashMap<String, String>),
     /// public key fingerprint of this device
@@ -249,6 +251,8 @@ pub enum FrontendRequest {
     EnableEmulation,
     /// enable or disable clipboard sharing
     SetClipboardSharing(bool),
+    /// enable or disable swapping Option and Command for Linux/Windows peers
+    SetSwapOptionCommand(bool),
     /// synchronize all state
     Sync,
     /// authorize fingerprint (description, fingerprint)
@@ -295,6 +299,24 @@ mod tests {
     #[test]
     fn set_clipboard_sharing_request_round_trips_json() {
         let request = FrontendRequest::SetClipboardSharing(false);
+        let json = serde_json::to_string(&request).expect("serialize request");
+        let decoded: FrontendRequest = serde_json::from_str(&json).expect("decode request");
+
+        assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn swap_option_command_event_round_trips_json() {
+        let event = FrontendEvent::SwapOptionCommand(true);
+        let json = serde_json::to_string(&event).expect("serialize event");
+        let decoded: FrontendEvent = serde_json::from_str(&json).expect("decode event");
+
+        assert!(matches!(decoded, FrontendEvent::SwapOptionCommand(true)));
+    }
+
+    #[test]
+    fn set_swap_option_command_request_round_trips_json() {
+        let request = FrontendRequest::SetSwapOptionCommand(false);
         let json = serde_json::to_string(&request).expect("serialize request");
         let decoded: FrontendRequest = serde_json::from_str(&json).expect("decode request");
 

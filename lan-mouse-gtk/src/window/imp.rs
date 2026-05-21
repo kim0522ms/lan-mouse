@@ -48,6 +48,8 @@ pub struct Window {
     #[template_child]
     pub autostart_switch: TemplateChild<Switch>,
     #[template_child]
+    pub swap_option_command_switch: TemplateChild<Switch>,
+    #[template_child]
     pub diagnostics_button: TemplateChild<Button>,
     #[template_child]
     pub authorized_list: TemplateChild<ListBox>,
@@ -59,6 +61,7 @@ pub struct Window {
     pub emulation_active: Cell<bool>,
     pub clipboard_sharing_syncing: Cell<bool>,
     pub autostart_syncing: Cell<bool>,
+    pub swap_option_command_syncing: Cell<bool>,
     pub last_event: RefCell<String>,
     pub authorization_window: RefCell<Option<AuthorizationWindow>>,
 }
@@ -234,6 +237,18 @@ impl ObjectImpl for Window {
             move |_, state| {
                 if !window.autostart_syncing.get() {
                     window.obj().request_autostart(state);
+                }
+                glib::Propagation::Proceed
+            }
+        ));
+        self.swap_option_command_switch.connect_state_set(clone!(
+            #[weak(rename_to = window)]
+            self,
+            #[upgrade_or]
+            glib::Propagation::Proceed,
+            move |_, state| {
+                if !window.swap_option_command_syncing.get() {
+                    window.obj().request_swap_option_command(state);
                 }
                 glib::Propagation::Proceed
             }

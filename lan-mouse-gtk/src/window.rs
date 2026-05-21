@@ -411,6 +411,10 @@ impl Window {
         self.request(FrontendRequest::SetClipboardSharing(enabled));
     }
 
+    pub(super) fn request_swap_option_command(&self, enabled: bool) {
+        self.request(FrontendRequest::SetSwapOptionCommand(enabled));
+    }
+
     pub(super) fn request_autostart(&self, enabled: bool) {
         let result = set_autostart(enabled);
         match result {
@@ -521,6 +525,11 @@ impl Window {
             "Autostart",
             enabled_label(self.imp().autostart_switch.is_active()),
         );
+        add_diagnostics_row(
+            &content,
+            "Option/Command swap",
+            enabled_label(self.imp().swap_option_command_switch.is_active()),
+        );
         add_diagnostics_row(&content, "Port", &self.imp().port.get().to_string());
 
         content.append(&Separator::new(Orientation::Horizontal));
@@ -611,6 +620,18 @@ impl Window {
             switch.set_state(enabled);
         }
         self.imp().autostart_syncing.set(false);
+    }
+
+    pub(super) fn set_swap_option_command(&self, enabled: bool) {
+        let switch = self.imp().swap_option_command_switch.get();
+        self.imp().swap_option_command_syncing.set(true);
+        if switch.is_active() != enabled {
+            switch.set_active(enabled);
+        }
+        if switch.state() != enabled {
+            switch.set_state(enabled);
+        }
+        self.imp().swap_option_command_syncing.set(false);
     }
 
     #[cfg(target_os = "macos")]

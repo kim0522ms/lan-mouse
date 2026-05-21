@@ -254,6 +254,9 @@ fn build_ui(app: &Application) {
                     FrontendEvent::ClipboardSharing(enabled) => {
                         window.set_clipboard_sharing(enabled)
                     }
+                    FrontendEvent::SwapOptionCommand(enabled) => {
+                        window.set_swap_option_command(enabled)
+                    }
                     FrontendEvent::AuthorizedUpdated(keys) => window.set_authorized_keys(keys),
                     FrontendEvent::PublicKeyFingerprint(fp) => window.set_pk_fp(&fp),
                     FrontendEvent::ConnectionAttempt { fingerprint } => {

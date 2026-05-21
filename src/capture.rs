@@ -67,6 +67,8 @@ enum CaptureRequest {
     SetReleaseBind(Vec<scancode::Linux>),
     /// enable or disable clipboard sharing
     SetClipboardSharing(bool),
+    /// swap Option and Command when this macOS host controls Linux/Windows peers
+    SetSwapOptionCommand(bool),
 }
 
 impl Capture {
@@ -75,6 +77,7 @@ impl Capture {
         conn: LanMouseConnection,
         release_bind: Vec<scancode::Linux>,
         clipboard_sharing: bool,
+        swap_option_command: bool,
     ) -> Self {
         let (request_tx, request_rx) = channel();
         let (event_tx, event_rx) = channel();
@@ -89,6 +92,7 @@ impl Capture {
             request_rx,
             clipboard_sharing: Rc::new(Cell::new(clipboard_sharing)),
             clipboard_transfers: Default::default(),
+            swap_option_command: Rc::new(Cell::new(swap_option_command)),
             release_bind: Rc::new(RefCell::new(release_bind)),
             state: Default::default(),
         };
@@ -152,6 +156,12 @@ impl Capture {
             .request_tx
             .send(CaptureRequest::SetClipboardSharing(enabled));
     }
+
+    pub(crate) fn set_swap_option_command(&mut self, enabled: bool) {
+        let _ = self
+            .request_tx
+            .send(CaptureRequest::SetSwapOptionCommand(enabled));
+    }
 }
 
 /// debounce a statement `$st`, i.e. the statement is executed only if the
@@ -183,6 +193,7 @@ struct CaptureTask {
     release_bind: Rc<RefCell<Vec<scancode::Linux>>>,
     request_rx: Receiver<CaptureRequest>,
     state: State,
+    swap_option_command: Rc<Cell<bool>>,
 }
 
 impl CaptureTask {
@@ -240,6 +251,9 @@ impl CaptureTask {
                             if !enabled {
                                 self.clipboard_transfers.clear();
                             }
+                        }
+                        CaptureRequest::SetSwapOptionCommand(enabled) => {
+                            self.swap_option_command.set(enabled);
                         }
                     },
                     _ = self.cancellation_token.cancelled() => return,
@@ -368,6 +382,9 @@ impl CaptureTask {
                             self.clipboard_transfers.clear();
                         }
                     }
+                    CaptureRequest::SetSwapOptionCommand(enabled) => {
+                        self.swap_option_command.set(enabled);
+                    }
                 },
                 _ = self.cancellation_token.cancelled() => break,
             }
@@ -464,7 +481,7 @@ impl CaptureTask {
                     pos: opposite_pos,
                     capabilities: local_capabilities(self.clipboard_sharing.get()),
                 },
-                State::Sending => ProtoEvent::Input(e),
+                State::Sending => ProtoEvent::Input(self.map_outgoing_event(handle, e)),
             },
         };
 
@@ -474,6 +491,17 @@ impl CaptureTask {
             capture.release().await?;
         }
         Ok(())
+    }
+
+    fn map_outgoing_event(&self, handle: CaptureHandle, event: Event) -> Event {
+        #[cfg(target_os = "macos")]
+        {
+            if self.swap_option_command.get() && self.conn.peer_is_linux_or_windows(handle) {
+                return swap_option_command_event(event);
+            }
+        }
+        let _ = handle;
+        event
     }
 
     async fn send_clipboard(&self, handle: CaptureHandle) {
@@ -525,11 +553,12 @@ impl CaptureTask {
             // mods until its watchdog times out (1+ s) or our Leave
             // arrives — and Leave can be lost over UDP/DTLS.
             for key in capture.take_pressed_keys() {
-                let key_up = ProtoEvent::Input(Event::Keyboard(KeyboardEvent::Key {
+                let key_up_event = Event::Keyboard(KeyboardEvent::Key {
                     time: 0,
                     key: key as u32,
                     state: 0,
-                }));
+                });
+                let key_up = ProtoEvent::Input(self.map_outgoing_event(handle, key_up_event));
                 if let Err(e) = self.conn.send(key_up, handle).await {
                     log::warn!("failed to send key-up to client {handle}: {e}");
                 }
@@ -585,6 +614,56 @@ fn to_proto_pos(pos: input_capture::Position) -> lan_mouse_proto::Position {
         input_capture::Position::Top => lan_mouse_proto::Position::Top,
         input_capture::Position::Bottom => lan_mouse_proto::Position::Bottom,
     }
+}
+
+#[cfg(target_os = "macos")]
+fn swap_option_command_event(event: Event) -> Event {
+    match event {
+        Event::Keyboard(KeyboardEvent::Key { time, key, state }) => {
+            Event::Keyboard(KeyboardEvent::Key {
+                time,
+                key: swap_option_command_key(key),
+                state,
+            })
+        }
+        Event::Keyboard(KeyboardEvent::Modifiers {
+            depressed,
+            latched,
+            locked,
+            group,
+        }) => Event::Keyboard(KeyboardEvent::Modifiers {
+            depressed: swap_option_command_mods(depressed),
+            latched: swap_option_command_mods(latched),
+            locked,
+            group,
+        }),
+        event => event,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn swap_option_command_key(key: u32) -> u32 {
+    match scancode::Linux::try_from(key) {
+        Ok(scancode::Linux::KeyLeftAlt) => scancode::Linux::KeyLeftMeta as u32,
+        Ok(scancode::Linux::KeyLeftMeta) => scancode::Linux::KeyLeftAlt as u32,
+        Ok(scancode::Linux::KeyRightalt) => scancode::Linux::KeyRightmeta as u32,
+        Ok(scancode::Linux::KeyRightmeta) => scancode::Linux::KeyRightalt as u32,
+        _ => key,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn swap_option_command_mods(mods: u32) -> u32 {
+    const MOD1_MASK: u32 = 1 << 3;
+    const MOD4_MASK: u32 = 1 << 6;
+    let mut swapped = mods & !(MOD1_MASK | MOD4_MASK);
+    if mods & MOD1_MASK != 0 {
+        swapped |= MOD4_MASK;
+    }
+    if mods & MOD4_MASK != 0 {
+        swapped |= MOD1_MASK;
+    }
+    swapped
 }
 
 struct DropGuard<T> {
