@@ -146,19 +146,21 @@ impl Display for ProtoEvent {
 #[derive(TryFromPrimitive, IntoPrimitive)]
 #[repr(u8)]
 pub enum EventType {
-    PointerMotion,
-    PointerButton,
-    PointerAxis,
-    PointerAxisValue120,
-    KeyboardKey,
-    KeyboardModifiers,
-    Ping,
-    Pong,
-    Enter,
-    Leave,
-    Ack,
-    Clipboard,
-    Lock,
+    // Keep 0x00..=0x7f available for upstream events.
+    PointerMotion = 0x00,
+    PointerButton = 0x01,
+    PointerAxis = 0x02,
+    PointerAxisValue120 = 0x03,
+    KeyboardKey = 0x04,
+    KeyboardModifiers = 0x05,
+    Ping = 0x06,
+    Pong = 0x07,
+    Enter = 0x08,
+    Leave = 0x09,
+    Ack = 0x0a,
+    // Fork extensions use explicit IDs in 0x80..=0xff, without legacy aliases.
+    Clipboard = 0x80,
+    Lock = 0x81,
 }
 
 impl ProtoEvent {
@@ -448,6 +450,60 @@ mod tests {
     use super::*;
 
     #[test]
+    fn event_ids_match_the_wire_contract() {
+        for (event, expected) in [
+            (EventType::PointerMotion, 0x00),
+            (EventType::PointerButton, 0x01),
+            (EventType::PointerAxis, 0x02),
+            (EventType::PointerAxisValue120, 0x03),
+            (EventType::KeyboardKey, 0x04),
+            (EventType::KeyboardModifiers, 0x05),
+            (EventType::Ping, 0x06),
+            (EventType::Pong, 0x07),
+            (EventType::Enter, 0x08),
+            (EventType::Leave, 0x09),
+            (EventType::Ack, 0x0a),
+            (EventType::Clipboard, 0x80),
+            (EventType::Lock, 0x81),
+        ] {
+            let id: u8 = event.into();
+            assert_eq!(id, expected);
+            let decoded: u8 = EventType::try_from(expected).expect("event id").into();
+            assert_eq!(decoded, expected);
+        }
+    }
+
+    #[test]
+    fn old_fork_extension_ids_are_rejected() {
+        let (mut clipboard, len) = ProtoEvent::Clipboard(ClipboardData {
+            transfer_id: 42,
+            chunk_index: 0,
+            chunk_count: 1,
+            mime: CLIPBOARD_MIME_TEXT.to_owned(),
+            payload: b"old clipboard".to_vec(),
+        })
+        .into();
+        clipboard[0] = 11;
+
+        for packet in [&clipboard[..len], &[12][..]] {
+            assert!(matches!(
+                ProtoEvent::try_from(packet),
+                Err(ProtocolError::InvalidEventId(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn unassigned_event_ids_are_rejected() {
+        for id in [0x7f, 0x82, 0xff] {
+            assert!(matches!(
+                ProtoEvent::try_from(&[id][..]),
+                Err(ProtocolError::InvalidEventId(_))
+            ));
+        }
+    }
+
+    #[test]
     fn capability_events_decode_from_legacy_short_messages() {
         let enter = [EventType::Enter as u8, Position::Right as u8];
         assert!(matches!(
@@ -550,6 +606,7 @@ mod tests {
     #[test]
     fn lock_event_round_trips() {
         let (buf, len) = ProtoEvent::Lock.into();
+        assert_eq!(&buf[..len], &[0x81]);
         assert!(matches!(
             ProtoEvent::try_from(&buf[..len]).expect("decode lock"),
             ProtoEvent::Lock
@@ -568,6 +625,7 @@ mod tests {
 
         let (buf, len) = event.into();
         assert!(len <= MAX_EVENT_SIZE);
+        assert_eq!(buf[0], 0x80);
         let decoded = ProtoEvent::try_from(&buf[..len]).expect("decode event");
         let ProtoEvent::Clipboard(decoded) = decoded else {
             panic!("expected clipboard event");

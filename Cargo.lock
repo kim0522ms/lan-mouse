@@ -1913,7 +1913,7 @@ dependencies = [
 
 [[package]]
 name = "lan-mouse"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "arboard",
  "clap",
@@ -1988,7 +1988,7 @@ dependencies = [
 
 [[package]]
 name = "lan-mouse-proto"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "input-event",
  "num_enum",

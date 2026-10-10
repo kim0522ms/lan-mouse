@@ -29,6 +29,20 @@ Focus lies on performance, ease of use and a maintainable implementation that ca
 Lan Mouse encrypts all network traffic using the DTLS implementation provided by [WebRTC.rs](https://github.com/webrtc-rs/webrtc).
 There are currently no mitigations in place for timing side-channel attacks.
 
+## Fork protocol compatibility
+
+This fork's 0.11.0 release (`lan-mouse-proto` 0.3.0) changes the wire IDs for
+clipboard sharing to `0x80` and synchronized locking to `0x81`.
+The previous fork IDs, `11` and `12`, are no longer accepted as these extensions;
+there is no compatibility fallback. Upgrade all participating fork instances together.
+The package version bump does not add a connection-time version check.
+
+Within this fork, `0x00`–`0x7f` is kept available for upstream events and
+`0x80`–`0xff` is used for fork extensions. Event IDs are assigned explicitly so
+reordering enum variants cannot change the wire format. This allocation is a fork
+convention, not a reservation agreed with upstream; check for collisions when merging
+future upstream changes. The shared base event formats remain unchanged.
+
 ## OS Support
 
 Most current desktop environments and operating systems are fully supported, this includes
