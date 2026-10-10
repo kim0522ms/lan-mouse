@@ -1,4 +1,5 @@
 use crate::client::ClientManager;
+use crate::config::local_commit;
 use lan_mouse_ipc::{ClientHandle, DEFAULT_PORT};
 #[cfg(target_os = "macos")]
 use lan_mouse_proto::capabilities_indicate_linux_or_windows;
@@ -25,6 +26,10 @@ use webrtc_dtls::{
     crypto::Certificate,
 };
 use webrtc_util::Conn;
+
+#[cfg(test)]
+#[path = "connect_tests.rs"]
+mod tests;
 
 #[derive(Debug, Error)]
 pub(crate) enum LanMouseConnectionError {
@@ -234,6 +239,19 @@ async fn connect_to_handle(
         conns.lock().await.insert(addr, conn.clone());
         connecting.lock().await.remove(&handle);
 
+        // Best-effort version handshake. Send our commit hash once
+        // immediately after the DTLS handshake; the listen side
+        // mirrors a Hello back so the receive loop can populate
+        // `peer_commit`. Old peers will silently skip this event
+        // per the forward-compat handler in [`receive_loop`].
+        let (buf, len) = ProtoEvent::Hello {
+            commit: local_commit(),
+        }
+        .into();
+        if let Err(e) = conn.send(&buf[..len]).await {
+            log::debug!("hello send to {addr} failed: {e}");
+        }
+
         // poll connection for active
         spawn_local(ping_pong(addr, conn.clone(), ping_response.clone()));
 
@@ -294,24 +312,31 @@ async fn receive_loop(
 ) {
     let mut buf = [0u8; MAX_EVENT_SIZE];
     while let Ok(len) = conn.recv(&mut buf).await {
-        if let Ok(event) = ProtoEvent::try_from(&buf[..len]) {
-            log::trace!("{addr} <==<==<== {event}");
-            if matches!(
-                event,
-                ProtoEvent::Enter { .. } | ProtoEvent::Ack { .. } | ProtoEvent::Pong { .. }
-            ) {
-                capabilities
-                    .borrow_mut()
-                    .insert(handle, event.capabilities());
-            }
-            match event {
-                ProtoEvent::Pong { alive, .. } => {
-                    client_manager.set_active_addr(handle, Some(addr));
-                    client_manager.set_alive(handle, alive);
-                    ping_response.borrow_mut().insert(addr);
+        match ProtoEvent::try_from(&buf[..len]) {
+            Ok(event) => {
+                log::trace!("{addr} <==<==<== {event}");
+                if matches!(
+                    event,
+                    ProtoEvent::Enter { .. } | ProtoEvent::Ack { .. } | ProtoEvent::Pong { .. }
+                ) {
+                    capabilities
+                        .borrow_mut()
+                        .insert(handle, event.capabilities());
                 }
-                event => tx.send((handle, event)).expect("channel closed"),
+                match event {
+                    ProtoEvent::Pong { alive, .. } => {
+                        client_manager.set_active_addr(handle, Some(addr));
+                        client_manager.set_alive(handle, alive);
+                        ping_response.borrow_mut().insert(addr);
+                    }
+                    ProtoEvent::Hello { commit } => {
+                        client_manager.set_peer_commit(handle, Some(commit));
+                    }
+                    event => tx.send((handle, event)).expect("channel closed"),
+                }
             }
+            // Ignore unknown or malformed datagrams without losing the connection.
+            Err(e) => log::debug!("ignoring undecodable event from {addr}: {e}"),
         }
     }
     log::warn!("recv error");
@@ -328,6 +353,7 @@ async fn disconnect(
     log::warn!("client ({handle}) @ {addr} connection closed");
     conns.lock().await.remove(&addr);
     client_manager.set_active_addr(handle, None);
+    client_manager.set_peer_commit(handle, None);
     let active: Vec<SocketAddr> = conns.lock().await.keys().copied().collect();
     log::info!("active connections: {active:?}");
 }

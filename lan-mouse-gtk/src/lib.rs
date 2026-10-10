@@ -14,9 +14,27 @@ mod macos_status_item;
 mod macos_sync_lock;
 mod window;
 
-use std::{env, process, str};
+use std::{env, process, str, sync::OnceLock};
 
+use gtk::CssProvider;
 use window::Window;
+
+/// Local build's commit hash, set once by [`run`] before the GTK
+/// main loop starts. Read by per-row UI to compare against each
+/// peer's [`lan_mouse_ipc::ClientState::peer_commit`] for the
+/// soft-warn version-mismatch indicator.
+pub(crate) static LOCAL_COMMIT: OnceLock<[u8; 8]> = OnceLock::new();
+
+/// Convenience: returns the local commit as an 8-char ASCII string,
+/// or a placeholder if unset (which would indicate a programmer
+/// error since [`run`] always sets it).
+pub(crate) fn local_commit_str() -> String {
+    LOCAL_COMMIT
+        .get()
+        .and_then(|c| std::str::from_utf8(c).ok())
+        .unwrap_or("????????")
+        .to_string()
+}
 
 use lan_mouse_ipc::FrontendEvent;
 
@@ -35,8 +53,12 @@ pub enum GtkError {
     NonZeroExitCode(i32),
 }
 
-pub fn run() -> Result<(), GtkError> {
+pub fn run(local_commit: [u8; 8]) -> Result<(), GtkError> {
     log::debug!("running gtk frontend");
+    LOCAL_COMMIT
+        .set(local_commit)
+        .expect("local_commit set once");
+
     #[cfg(windows)]
     let ret = std::thread::Builder::new()
         .stack_size(8 * 1024 * 1024) // https://gitlab.gnome.org/GNOME/gtk/-/commit/52dbb3f372b2c3ea339e879689c1de535ba2c2c3 -> caused crash on windows
@@ -68,6 +90,7 @@ fn gtk_main() -> glib::ExitCode {
         .build();
 
     app.connect_startup(|app| {
+        load_css();
         load_icons();
         setup_actions(app);
         setup_menu(app);
@@ -136,6 +159,16 @@ fn configure_macos_bundle_environment() {
     );
 }
 
+fn load_css() {
+    let provider = CssProvider::default();
+    provider.load_from_resource("de/feschber/LanMouse/style.css");
+    gtk::style_context_add_provider_for_display(
+        &Display::default().expect("Could not connect to a display"),
+        &provider,
+        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
+}
+
 fn load_icons() {
     let display = &Display::default().expect("Could not connect to a display.");
     let icon_theme = IconTheme::for_display(display);
@@ -170,12 +203,38 @@ fn setup_menu(app: &adw::Application) {
 }
 
 fn build_ui(app: &Application) {
+    // If a window already exists (re-activation), just present it
+    if let Some(window) = app.windows().first() {
+        window.present();
+        return;
+    }
+
     log::debug!("connecting to lan-mouse-socket");
-    let (mut frontend_rx, frontend_tx) = match lan_mouse_ipc::connect() {
+    let (mut frontend_rx, frontend_tx) = match lan_mouse_ipc::try_connect() {
         Ok(conn) => conn,
-        Err(e) => {
-            log::error!("{e}");
+        Err(e) if env::var_os("LAN_MOUSE_NO_SPAWN").is_some() => {
+            log::error!("could not connect to daemon with LAN_MOUSE_NO_SPAWN set: {e}");
             process::exit(1);
+        }
+        Err(e) => {
+            log::warn!("could not connect to daemon ({e}), spawning a new one");
+            if let Err(spawn_err) = process::Command::new(
+                env::current_exe().expect("could not determine executable path"),
+            )
+            .args(env::args().skip(1))
+            .arg("daemon")
+            .spawn()
+            {
+                log::error!("failed to spawn daemon: {spawn_err}");
+                process::exit(1);
+            }
+            match lan_mouse_ipc::connect() {
+                Ok(conn) => conn,
+                Err(e) => {
+                    log::error!("{e}");
+                    process::exit(1);
+                }
+            }
         }
     };
     log::debug!("connected to lan-mouse-socket");

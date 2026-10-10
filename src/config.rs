@@ -1,6 +1,7 @@
 use crate::capture_test::TestCaptureArgs;
 use crate::emulation_test::TestEmulationArgs;
 use clap::{Parser, Subcommand, ValueEnum};
+use notify::event::ModifyKind;
 use notify::{EventKind, RecommendedWatcher, Watcher};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -26,6 +27,18 @@ use input_event::scancode::{
 use shadow_rs::shadow;
 
 shadow!(build);
+
+/// Local build's 8-byte ASCII short commit hash, suitable for use
+/// in [`lan_mouse_proto::ProtoEvent::Hello`]. Pads with `'?'` if
+/// shadow_rs returns an unexpected length so the field is always
+/// well-formed on the wire.
+pub fn local_commit() -> [u8; 8] {
+    let bytes = build::SHORT_COMMIT.as_bytes();
+    let mut out = [b'?'; 8];
+    let n = bytes.len().min(8);
+    out[..n].copy_from_slice(&bytes[..n]);
+    out
+}
 
 const CONFIG_FILE_NAME: &str = "config.toml";
 const CERT_FILE_NAME: &str = "lan-mouse.pem";
@@ -70,6 +83,7 @@ struct TomlClient {
     position: Option<Position>,
     activate_on_startup: Option<bool>,
     enter_hook: Option<String>,
+    leave_hook: Option<String>,
 }
 
 impl ConfigToml {
@@ -121,13 +135,13 @@ pub enum Command {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ValueEnum)]
 pub enum CaptureBackend {
-    #[cfg(all(unix, feature = "libei_capture", not(target_os = "macos")))]
+    #[cfg(libei_capture)]
     #[serde(rename = "input-capture-portal")]
     InputCapturePortal,
-    #[cfg(all(unix, feature = "layer_shell_capture", not(target_os = "macos")))]
+    #[cfg(layer_shell_capture)]
     #[serde(rename = "layer-shell")]
     LayerShell,
-    #[cfg(all(unix, feature = "x11_capture", not(target_os = "macos")))]
+    #[cfg(x11_capture)]
     #[serde(rename = "x11")]
     X11,
     #[cfg(windows)]
@@ -143,11 +157,11 @@ pub enum CaptureBackend {
 impl Display for CaptureBackend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            #[cfg(all(unix, feature = "libei_capture", not(target_os = "macos")))]
+            #[cfg(libei_capture)]
             CaptureBackend::InputCapturePortal => write!(f, "input-capture-portal"),
-            #[cfg(all(unix, feature = "layer_shell_capture", not(target_os = "macos")))]
+            #[cfg(layer_shell_capture)]
             CaptureBackend::LayerShell => write!(f, "layer-shell"),
-            #[cfg(all(unix, feature = "x11_capture", not(target_os = "macos")))]
+            #[cfg(x11_capture)]
             CaptureBackend::X11 => write!(f, "X11"),
             #[cfg(windows)]
             CaptureBackend::Windows => write!(f, "windows"),
@@ -161,11 +175,11 @@ impl Display for CaptureBackend {
 impl From<CaptureBackend> for input_capture::Backend {
     fn from(backend: CaptureBackend) -> Self {
         match backend {
-            #[cfg(all(unix, feature = "libei_capture", not(target_os = "macos")))]
+            #[cfg(libei_capture)]
             CaptureBackend::InputCapturePortal => Self::InputCapturePortal,
-            #[cfg(all(unix, feature = "layer_shell_capture", not(target_os = "macos")))]
+            #[cfg(layer_shell_capture)]
             CaptureBackend::LayerShell => Self::LayerShell,
-            #[cfg(all(unix, feature = "x11_capture", not(target_os = "macos")))]
+            #[cfg(x11_capture)]
             CaptureBackend::X11 => Self::X11,
             #[cfg(windows)]
             CaptureBackend::Windows => Self::Windows,
@@ -178,16 +192,16 @@ impl From<CaptureBackend> for input_capture::Backend {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, ValueEnum)]
 pub enum EmulationBackend {
-    #[cfg(all(unix, feature = "wlroots_emulation", not(target_os = "macos")))]
+    #[cfg(wlroots_emulation)]
     #[serde(rename = "wlroots")]
     Wlroots,
-    #[cfg(all(unix, feature = "libei_emulation", not(target_os = "macos")))]
+    #[cfg(libei_emulation)]
     #[serde(rename = "libei")]
     Libei,
-    #[cfg(all(unix, feature = "rdp_emulation", not(target_os = "macos")))]
+    #[cfg(rdp_emulation)]
     #[serde(rename = "xdp")]
     Xdp,
-    #[cfg(all(unix, feature = "x11_emulation", not(target_os = "macos")))]
+    #[cfg(x11_emulation)]
     #[serde(rename = "x11")]
     X11,
     #[cfg(windows)]
@@ -203,13 +217,13 @@ pub enum EmulationBackend {
 impl From<EmulationBackend> for input_emulation::Backend {
     fn from(backend: EmulationBackend) -> Self {
         match backend {
-            #[cfg(all(unix, feature = "wlroots_emulation", not(target_os = "macos")))]
+            #[cfg(wlroots_emulation)]
             EmulationBackend::Wlroots => Self::Wlroots,
-            #[cfg(all(unix, feature = "libei_emulation", not(target_os = "macos")))]
+            #[cfg(libei_emulation)]
             EmulationBackend::Libei => Self::Libei,
-            #[cfg(all(unix, feature = "rdp_emulation", not(target_os = "macos")))]
+            #[cfg(rdp_emulation)]
             EmulationBackend::Xdp => Self::Xdp,
-            #[cfg(all(unix, feature = "x11_emulation", not(target_os = "macos")))]
+            #[cfg(x11_emulation)]
             EmulationBackend::X11 => Self::X11,
             #[cfg(windows)]
             EmulationBackend::Windows => Self::Windows,
@@ -223,13 +237,13 @@ impl From<EmulationBackend> for input_emulation::Backend {
 impl Display for EmulationBackend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            #[cfg(all(unix, feature = "wlroots_emulation", not(target_os = "macos")))]
+            #[cfg(wlroots_emulation)]
             EmulationBackend::Wlroots => write!(f, "wlroots"),
-            #[cfg(all(unix, feature = "libei_emulation", not(target_os = "macos")))]
+            #[cfg(libei_emulation)]
             EmulationBackend::Libei => write!(f, "libei"),
-            #[cfg(all(unix, feature = "rdp_emulation", not(target_os = "macos")))]
+            #[cfg(rdp_emulation)]
             EmulationBackend::Xdp => write!(f, "xdg-desktop-portal"),
-            #[cfg(all(unix, feature = "x11_emulation", not(target_os = "macos")))]
+            #[cfg(x11_emulation)]
             EmulationBackend::X11 => write!(f, "X11"),
             #[cfg(windows)]
             EmulationBackend::Windows => write!(f, "windows"),
@@ -265,12 +279,14 @@ pub struct ConfigClient {
     pub pos: Position,
     pub active: bool,
     pub enter_hook: Option<String>,
+    pub leave_hook: Option<String>,
 }
 
 impl From<TomlClient> for ConfigClient {
     fn from(toml: TomlClient) -> Self {
         let active = toml.activate_on_startup.unwrap_or(false);
         let enter_hook = toml.enter_hook;
+        let leave_hook = toml.leave_hook;
         let hostname = toml.hostname;
         let ips = HashSet::from_iter(toml.ips.into_iter().flatten());
         let port = toml.port.unwrap_or(DEFAULT_PORT);
@@ -282,6 +298,7 @@ impl From<TomlClient> for ConfigClient {
             pos,
             active,
             enter_hook,
+            leave_hook,
         }
     }
 }
@@ -301,6 +318,7 @@ impl From<ConfigClient> for TomlClient {
         let position = Some(client.pos);
         let activate_on_startup = if client.active { Some(true) } else { None };
         let enter_hook = client.enter_hook;
+        let leave_hook = client.leave_hook;
         Self {
             hostname,
             host_name,
@@ -309,6 +327,7 @@ impl From<ConfigClient> for TomlClient {
             position,
             activate_on_startup,
             enter_hook,
+            leave_hook,
         }
     }
 }
@@ -409,7 +428,9 @@ impl Config {
             if event.paths.contains(&self.config_path)
                 && matches!(
                     event.kind,
-                    EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
+                    EventKind::Create(_)
+                        | EventKind::Modify(ModifyKind::Data(_))
+                        | EventKind::Remove(_)
                 )
                 && self.read_from_disk()?
             {
@@ -557,7 +578,7 @@ impl Config {
     }
 
     pub fn read_from_disk(&mut self) -> Result<bool, io::Error> {
-        log::info!("reading config from {:?}", &self.config_path);
+        log::info!("reading config from {:?}", self.config_path);
 
         let current_config = fs::read_to_string(&self.config_path)?;
         let current_config = match current_config.parse::<DocumentMut>() {
@@ -578,11 +599,16 @@ impl Config {
             }
             Err(e) => log::warn!("{:?} {e}", self.config_path()),
         };
+        if changed {
+            log::info!("config changed");
+        } else {
+            log::info!("config unchanged");
+        }
         Ok(changed)
     }
 
     pub fn write_back(&mut self) -> Result<(), io::Error> {
-        log::info!("writing config to {:?}", &self.config_path);
+        log::info!("writing config to {:?}", self.config_path);
         /* the new config */
         let new_config = self.config_toml.clone().unwrap_or_default();
         let new_config = toml_edit::ser::to_string_pretty(&new_config).expect("config");
@@ -616,6 +642,34 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fork_preferences_and_upstream_hooks_survive_config_round_trip() {
+        let config: ConfigToml = toml::from_str(
+            r#"
+clipboard_sharing = true
+swap_option_command = true
+sync_lock = true
+[[clients]]
+hostname = "peer.local"
+position = "right"
+activate_on_startup = true
+enter_hook = "echo enter"
+leave_hook = "echo leave"
+"#,
+        )
+        .unwrap();
+        let saved = toml_edit::ser::to_string_pretty(&config).unwrap();
+        let restored: ConfigToml = toml::from_str(&saved).unwrap();
+        assert_eq!(restored, config);
+        let client: ConfigClient = restored.clients.unwrap().remove(0).into();
+        let manager = crate::client::ClientManager::default();
+        let handle = manager.add_with_config(client);
+        assert_eq!(manager.get_enter_cmd(handle).as_deref(), Some("echo enter"));
+        assert_eq!(manager.get_leave_cmd(handle).as_deref(), Some("echo leave"));
+        assert_eq!(manager.get_pos(handle), Some(Position::Right));
+        assert_eq!(manager.active_clients(), vec![handle]);
+    }
 
     #[test]
     fn clipboard_sharing_defaults_to_disabled_in_toml() {

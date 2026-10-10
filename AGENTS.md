@@ -28,7 +28,7 @@ Lan Mouse is an open-source Software KVM sharing mouse/keyboard input across loc
 
 ## Feature & cfg discipline
 
-- Feature flags live in root `Cargo.toml`. Gate OS-specific modules with tight cfgs (e.g., `cfg(all(unix, feature = "layer_shell", not(target_os = "macos")))`).
+- Feature flags live in root `Cargo.toml`. Gate OS-specific modules with the configs exported in build.rs (e.g., `cfg(layer_shell)`).
 - Prefer module-level gating over per-function cfgs to avoid empty stubs.
 - New backends: add feature in `Cargo.toml`, create gated module, log backend selection.
 
@@ -45,7 +45,7 @@ cargo build --workspace                                    # full build
 cargo build -p <crate>                                     # single crate
 cargo test --workspace                                     # all tests
 cargo fmt && cargo clippy --workspace --all-targets --all-features  # lint
-RUST_LOG=lan_mouse=debug cargo run                         # debug logging
+LAN_MOUSE_LOG_LEVEL=debug cargo run                        # debug logging
 ```
 
 Run from repo root—no `cd` in scripts.

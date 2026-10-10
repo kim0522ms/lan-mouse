@@ -36,12 +36,21 @@ clipboard sharing to `0x80` and synchronized locking to `0x81`.
 The previous fork IDs, `11` and `12`, are no longer accepted as these extensions;
 there is no compatibility fallback. Upgrade all participating fork instances together.
 The package version bump does not add a connection-time version check.
+Upstream build identification uses `Hello` at `0x0b` with an 8-byte commit hash;
+old fork clipboard packets at that ID are rejected, not translated.
 
 Within this fork, `0x00`–`0x7f` is kept available for upstream events and
 `0x80`–`0xff` is used for fork extensions. Event IDs are assigned explicitly so
 reordering enum variants cannot change the wire format. This allocation is a fork
 convention, not a reservation agreed with upstream; check for collisions when merging
 future upstream changes. The shared base event formats remain unchanged.
+
+The fork retains optional clipboard sharing, synchronized locking, macOS
+Option/Command swapping, login autostart, diagnostics, Linux tray support, and
+X11 return barriers alongside upstream peer-version display and `leave_hook`.
+`LAN_MOUSE_NO_SPAWN` attaches the GUI to an existing daemon without starting one;
+if no daemon is available, the GUI exits with an error. A GUI attached to an
+existing daemon does not terminate that process on exit.
 
 ## OS Support
 
@@ -124,6 +133,16 @@ dnf install lan-mouse
 
 </details>
 
+<details>
+    <summary>Windows</summary>
+
+Lan Mouse can be installed from the [winget community repositories](https://github.com/microsoft/winget-pkgs/tree/master/manifests/f/feschber/LanMouse):
+
+```sh
+winget install lan-mouse
+```
+
+</details>
 
 <details>
     <summary>Manual Installation</summary>

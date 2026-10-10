@@ -10,7 +10,6 @@ use crate::{
     sync_lock::LockMonitor,
 };
 use futures::StreamExt;
-use hickory_resolver::ResolveError;
 use lan_mouse_ipc::{
     AsyncFrontendListener, ClientHandle, FrontendEvent, FrontendRequest, IpcError,
     IpcListenerCreationError, Position, Status,
@@ -28,8 +27,6 @@ use tokio::{process::Command, signal, sync::Notify};
 
 #[derive(Debug, Error)]
 pub enum ServiceError {
-    #[error(transparent)]
-    Dns(#[from] ResolveError),
     #[error(transparent)]
     IpcListen(#[from] IpcListenerCreationError),
     #[error(transparent)]
@@ -271,6 +268,9 @@ impl Service {
             FrontendRequest::UpdateEnterHook(handle, enter_hook) => {
                 self.update_enter_hook(handle, enter_hook)
             }
+            FrontendRequest::UpdateLeaveHook(handle, leave_hook) => {
+                self.update_leave_hook(handle, leave_hook)
+            }
             FrontendRequest::SaveConfiguration => self.save_config(),
             FrontendRequest::Shutdown => {
                 self.save_config();
@@ -290,6 +290,7 @@ impl Service {
                 pos: c.pos,
                 active: s.active,
                 enter_hook: c.cmd,
+                leave_hook: c.leave_cmd,
             })
             .collect();
         self.config.set_clients(clients);
@@ -384,6 +385,17 @@ impl Service {
             EmulationEvent::Connected { addr, fingerprint } => {
                 self.notify_frontend(FrontendEvent::DeviceConnected { addr, fingerprint });
             }
+            EmulationEvent::PeerHello { addr, commit } => {
+                // Map the peer's source addr back to its client handle
+                // and stamp the commit. Skip if we don't have an
+                // outgoing client configured for this peer (incoming-
+                // only setup) — there's nowhere to display the version
+                // in that case anyway.
+                if let Some(handle) = self.client_manager.get_client(addr) {
+                    self.client_manager.set_peer_commit(handle, Some(commit));
+                    self.broadcast_client(handle);
+                }
+            }
         }
     }
 
@@ -413,7 +425,11 @@ impl Service {
             }
             ICaptureEvent::ClientEntered(handle) => {
                 log::info!("entering client {handle} ...");
-                self.spawn_hook_command(handle);
+                self.spawn_hook_command(handle, HookKind::Enter);
+            }
+            ICaptureEvent::ClientLeft(handle) => {
+                log::info!("leaving client {handle} ...");
+                self.spawn_hook_command(handle, HookKind::Leave);
             }
         }
     }
@@ -698,6 +714,11 @@ impl Service {
         self.broadcast_client(handle);
     }
 
+    fn update_leave_hook(&mut self, handle: ClientHandle, leave_hook: Option<String>) {
+        self.client_manager.set_leave_hook(handle, leave_hook);
+        self.broadcast_client(handle);
+    }
+
     fn broadcast_client(&mut self, handle: ClientHandle) {
         let event = self
             .client_manager
@@ -707,29 +728,46 @@ impl Service {
         self.notify_frontend(event);
     }
 
-    fn spawn_hook_command(&self, handle: ClientHandle) {
-        let Some(cmd) = self.client_manager.get_enter_cmd(handle) else {
-            return;
+    fn spawn_hook_command(&self, handle: ClientHandle, kind: HookKind) {
+        let cmd = match kind {
+            HookKind::Enter => self.client_manager.get_enter_cmd(handle),
+            HookKind::Leave => self.client_manager.get_leave_cmd(handle),
         };
+        let Some(cmd) = cmd else { return };
         tokio::task::spawn_local(async move {
-            log::info!("spawning command!");
+            log::info!("spawning {kind} hook for client {handle}");
             let mut child = match Command::new("sh").arg("-c").arg(cmd.as_str()).spawn() {
                 Ok(c) => c,
                 Err(e) => {
-                    log::warn!("could not execute cmd: {e}");
+                    log::warn!("could not execute {kind} hook for client {handle}: {e}");
                     return;
                 }
             };
             match child.wait().await {
                 Ok(s) => {
                     if s.success() {
-                        log::info!("{cmd} exited successfully");
+                        log::info!("{kind} hook for client {handle} ({cmd}) exited successfully");
                     } else {
-                        log::warn!("{cmd} exited with {s}");
+                        log::warn!("{kind} hook for client {handle} ({cmd}) exited with {s}");
                     }
                 }
-                Err(e) => log::warn!("{cmd}: {e}"),
+                Err(e) => log::warn!("{kind} hook for client {handle} ({cmd}): {e}"),
             }
         });
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum HookKind {
+    Enter,
+    Leave,
+}
+
+impl std::fmt::Display for HookKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HookKind::Enter => f.write_str("enter"),
+            HookKind::Leave => f.write_str("leave"),
+        }
     }
 }

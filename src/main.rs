@@ -11,12 +11,9 @@ use lan_mouse_cli::CliError;
 #[cfg(feature = "gtk")]
 use lan_mouse_gtk::GtkError;
 use lan_mouse_ipc::{IpcError, IpcListenerCreationError};
-use std::{
-    env,
-    future::Future,
-    io,
-    process::{self, Child},
-};
+#[cfg(feature = "gtk")]
+use std::{env, process::Child};
+use std::{future::Future, io, process};
 use thiserror::Error;
 use tokio::task::LocalSet;
 
@@ -70,29 +67,29 @@ fn run() -> Result<(), LanMouseError> {
             }
         },
         None => {
-            let gui_only = env::var_os("LAN_MOUSE_NO_SPAWN").is_some();
-
-            // otherwise start the service as a child process and
-            // run a frontend
             #[cfg(feature = "gtk")]
             {
-                if gui_only {
-                    lan_mouse_gtk::run()?;
+                // A GUI attached to an existing service does not own that process.
+                let mut service = if env::var_os("LAN_MOUSE_NO_SPAWN").is_some()
+                    || lan_mouse_ipc::is_service_running()
+                {
+                    None
                 } else {
-                    let mut service = start_service()?;
-                    let res = lan_mouse_gtk::run();
-                    #[cfg(unix)]
-                    {
-                        // on unix we give the service a chance to terminate gracefully
-                        let pid = service.id() as libc::pid_t;
+                    Some(start_service()?)
+                };
+                let res = lan_mouse_gtk::run(config::local_commit());
+                if let Some(ref mut service) = service {
+                    if service.try_wait()?.is_none() {
+                        #[cfg(unix)]
                         unsafe {
-                            libc::kill(pid, libc::SIGINT);
+                            libc::kill(service.id() as libc::pid_t, libc::SIGINT);
                         }
+                        #[cfg(not(unix))]
+                        service.kill()?;
                         service.wait()?;
                     }
-                    service.kill()?;
-                    res?;
                 }
+                res?;
             }
             #[cfg(not(feature = "gtk"))]
             {
@@ -125,6 +122,7 @@ where
     Ok(runtime.block_on(LocalSet::new().run_until(f))?)
 }
 
+#[cfg(feature = "gtk")]
 fn start_service() -> Result<Child, io::Error> {
     let child = process::Command::new(std::env::current_exe()?)
         .args(std::env::args().skip(1))

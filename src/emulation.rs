@@ -1,5 +1,6 @@
 use crate::{
     clipboard::{ClipboardTransferReceiver, SystemClipboard, encode_clipboard_events},
+    config::local_commit,
     listen::{LanMouseListener, ListenEvent, ListenerCreationError},
     sync_lock,
 };
@@ -56,6 +57,17 @@ pub(crate) enum EmulationEvent {
     EmulationEnabled,
     /// capture should be released
     ReleaseNotify,
+    /// peer sent us a Hello with its build commit hash. Used to
+    /// populate `client_manager.peer_commit` from the listen side
+    /// too — without this, peer-version visibility silently fails
+    /// whenever the outgoing connection in the *other* direction is
+    /// broken (one-way setups, asymmetric NAT, peer's TCP listener
+    /// down). The connect-side path stays as the primary source;
+    /// this is the defensive fallback.
+    PeerHello {
+        addr: SocketAddr,
+        commit: [u8; 8],
+    },
 }
 
 enum EmulationRequest {
@@ -233,6 +245,10 @@ impl ListenTask {
                             }
                             ProtoEvent::Ping => self.listener.reply(addr, ProtoEvent::Pong { alive: self.emulation_proxy.emulation_active.get(), capabilities: local_capabilities(self.clipboard_sharing.get(), self.sync_lock.get()) }).await,
                             ProtoEvent::Lock => self.handle_lock(addr, &peer_capabilities),
+                            ProtoEvent::Hello { commit } => {
+                                self.listener.reply(addr, ProtoEvent::Hello { commit: local_commit() }).await;
+                                self.event_tx.send(EmulationEvent::PeerHello { addr, commit }).expect("channel closed");
+                            }
                         }
                     }
                     Some(ListenEvent::Accept { addr, fingerprint }) => {

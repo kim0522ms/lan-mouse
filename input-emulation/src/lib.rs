@@ -30,6 +30,9 @@ mod macos;
 mod dummy;
 mod error;
 
+#[cfg(test)]
+mod tests;
+
 pub type EmulationHandle = u64;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

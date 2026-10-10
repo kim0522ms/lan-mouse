@@ -42,6 +42,13 @@ pub(crate) enum ICaptureEvent {
     /// either the remote client leaving its device region,
     /// a new device entering the screen or the release bind.
     ClientEntered(u64),
+    /// The previously active client was left, i.e. capture
+    /// was released for the given handle. Mirrors
+    /// [`ICaptureEvent::ClientEntered`] for the leave side
+    /// and fires on every release path (release-bind chord,
+    /// remote `Leave`, explicit `Release` request, send
+    /// failure, or destroy of the active capture).
+    ClientLeft(u64),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -391,6 +398,16 @@ impl CaptureTask {
                         capture.create(h, p).await?;
                     }
                     CaptureRequest::Destroy(h) => {
+                        // If the capture we're tearing down is the
+                        // currently-active one, treat this as a
+                        // release for hook purposes. The release_capture
+                        // path also clears active_client and flushes
+                        // pressed-key state to the peer; without this,
+                        // `cli deactivate` (or a hostname change
+                        // re-creating the client) would skip leave_hook.
+                        if self.active_client == Some(h) {
+                            self.release_capture(capture).await?;
+                        }
                         self.remove_capture(h);
                         capture.destroy(h).await?;
                     }
@@ -553,7 +570,11 @@ impl CaptureTask {
         if let Err(e) = self.conn.send(event, handle).await {
             const DUR: Duration = Duration::from_millis(500);
             debounce!(PREV_LOG, DUR, log::warn!("releasing capture: {e}"));
-            capture.release().await?;
+            // Funnel through release_capture so the leave_hook
+            // fires and active_client is cleared (without this the
+            // active_client field would stay stale until the next
+            // Begin from a different handle).
+            self.release_capture(capture).await?;
         }
         Ok(())
     }
@@ -607,6 +628,13 @@ impl CaptureTask {
     async fn release_capture(&mut self, capture: &mut InputCapture) -> Result<(), CaptureError> {
         // If we have an active client, notify them we're leaving
         if let Some(handle) = self.active_client.take() {
+            // Surface the leave to the service layer so it can fire
+            // the per-client leave_hook. Sent before the network
+            // teardown below so we never race against the peer
+            // disappearing.
+            self.event_tx
+                .send(ICaptureEvent::ClientLeft(handle))
+                .expect("channel closed");
             // Synthesize key-up events for every key still held in the
             // capture's pressed_keys set BEFORE sending Leave. Without
             // this, pressing the release-bind chord (typically all four
@@ -749,5 +777,86 @@ impl<T> Drop for DropGuard<T> {
         self.tx
             .send(self.on_drop.take().expect("item"))
             .expect("channel closed");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn failed_send_releases_capture_and_emits_client_left() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let cert = webrtc_dtls::crypto::Certificate::generate_self_signed(["test".into()])
+                    .unwrap();
+                let conn = LanMouseConnection::new(cert, crate::client::ClientManager::default());
+                let mut capture = Capture::new(
+                    Some(input_capture::Backend::Dummy),
+                    conn,
+                    vec![],
+                    false,
+                    false,
+                    false,
+                );
+                capture.create(42, lan_mouse_ipc::Position::Left, CaptureType::Default);
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    loop {
+                        if let ICaptureEvent::ClientLeft(handle) = capture.event().await {
+                            assert_eq!(handle, 42);
+                            break;
+                        }
+                    }
+                })
+                .await
+                .expect("send failure must emit leave for the hook");
+                capture.terminate().await;
+            })
+            .await;
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn option_command_swap_preserves_key_state_and_other_modifiers() {
+        for (from, to) in [
+            (scancode::Linux::KeyLeftAlt, scancode::Linux::KeyLeftMeta),
+            (scancode::Linux::KeyLeftMeta, scancode::Linux::KeyLeftAlt),
+            (scancode::Linux::KeyRightalt, scancode::Linux::KeyRightmeta),
+            (scancode::Linux::KeyRightmeta, scancode::Linux::KeyRightalt),
+            (scancode::Linux::KeyA, scancode::Linux::KeyA),
+        ] {
+            for state in [0, 1] {
+                let event = Event::Keyboard(KeyboardEvent::Key {
+                    time: 123,
+                    key: from as u32,
+                    state,
+                });
+                assert_eq!(
+                    swap_option_command_event(event),
+                    Event::Keyboard(KeyboardEvent::Key {
+                        time: 123,
+                        key: to as u32,
+                        state,
+                    })
+                );
+            }
+        }
+        for (from, to) in [(0, 0), (8, 64), (64, 8), (72, 72)] {
+            let event = Event::Keyboard(KeyboardEvent::Modifiers {
+                depressed: from | 1,
+                latched: from,
+                locked: 2,
+                group: 3,
+            });
+            assert_eq!(
+                swap_option_command_event(event),
+                Event::Keyboard(KeyboardEvent::Modifiers {
+                    depressed: to | 1,
+                    latched: to,
+                    locked: 2,
+                    group: 3,
+                })
+            );
+        }
     }
 }

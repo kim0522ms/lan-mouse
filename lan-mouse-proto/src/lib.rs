@@ -58,6 +58,8 @@ pub enum ProtocolError {
     UnexpectedEof,
     #[error("invalid clipboard event")]
     InvalidClipboard,
+    #[error("invalid hello event length")]
+    InvalidHello,
 }
 
 /// Position of a client
@@ -100,6 +102,8 @@ pub enum ProtoEvent {
     Ping,
     /// Response to [`ProtoEvent::Ping`], true if emulation is enabled / available
     Pong { alive: bool, capabilities: u32 },
+    /// Upstream build identification, encoded as an 8-byte short commit hash.
+    Hello { commit: [u8; 8] },
     /// Clipboard or other shared data payload.
     Clipboard(ClipboardData),
     /// Request that the peer locks its local login session.
@@ -139,6 +143,10 @@ impl Display for ProtoEvent {
                 data.payload.len()
             ),
             ProtoEvent::Lock => write!(f, "Lock"),
+            ProtoEvent::Hello { commit } => {
+                let commit = std::str::from_utf8(commit).unwrap_or("????????");
+                write!(f, "Hello({commit})")
+            }
         }
     }
 }
@@ -158,6 +166,7 @@ pub enum EventType {
     Enter = 0x08,
     Leave = 0x09,
     Ack = 0x0a,
+    Hello = 0x0b,
     // Fork extensions use explicit IDs in 0x80..=0xff, without legacy aliases.
     Clipboard = 0x80,
     Lock = 0x81,
@@ -185,6 +194,7 @@ impl ProtoEvent {
             ProtoEvent::Ack { .. } => EventType::Ack,
             ProtoEvent::Clipboard(_) => EventType::Clipboard,
             ProtoEvent::Lock => EventType::Lock,
+            ProtoEvent::Hello { .. } => EventType::Hello,
         }
     }
 
@@ -282,6 +292,11 @@ impl TryFrom<&[u8]> for ProtoEvent {
                 }))
             }
             EventType::Lock => Ok(Self::Lock),
+            EventType::Hello => {
+                // Exact framing also rejects old fork Clipboard packets at ID 11.
+                let commit = buf.try_into().map_err(|_| ProtocolError::InvalidHello)?;
+                Ok(Self::Hello { commit })
+            }
         }
     }
 }
@@ -379,6 +394,7 @@ impl From<ProtoEvent> for ([u8; MAX_EVENT_SIZE], usize) {
                     encode_bytes(buf, len, &data.payload);
                 }
                 ProtoEvent::Lock => {}
+                ProtoEvent::Hello { commit } => encode_bytes(buf, len, &commit),
             }
         }
         (buf, len)
@@ -463,6 +479,7 @@ mod tests {
             (EventType::Enter, 0x08),
             (EventType::Leave, 0x09),
             (EventType::Ack, 0x0a),
+            (EventType::Hello, 0x0b),
             (EventType::Clipboard, 0x80),
             (EventType::Lock, 0x81),
         ] {
@@ -474,7 +491,7 @@ mod tests {
     }
 
     #[test]
-    fn old_fork_extension_ids_are_rejected() {
+    fn old_fork_extension_packets_are_rejected() {
         let (mut clipboard, len) = ProtoEvent::Clipboard(ClipboardData {
             transfer_id: 42,
             chunk_index: 0,
@@ -485,12 +502,41 @@ mod tests {
         .into();
         clipboard[0] = 11;
 
-        for packet in [&clipboard[..len], &[12][..]] {
+        assert!(matches!(
+            ProtoEvent::try_from(&clipboard[..len]),
+            Err(ProtocolError::InvalidHello)
+        ));
+        assert!(matches!(
+            ProtoEvent::try_from(&[12][..]),
+            Err(ProtocolError::InvalidEventId(_))
+        ));
+    }
+
+    #[test]
+    fn upstream_hello_round_trips_without_fork_capabilities() {
+        let wire = b"\x0bf1b96bdc";
+        let event = ProtoEvent::try_from(&wire[..]).expect("upstream hello");
+        assert!(matches!(event, ProtoEvent::Hello { commit } if commit == *b"f1b96bdc"));
+        assert_eq!(event.capabilities(), 0);
+        assert_eq!(event.to_string(), "Hello(f1b96bdc)");
+        let (buf, len) = event.into();
+        assert_eq!(&buf[..len], wire);
+    }
+
+    #[test]
+    fn hello_requires_exact_datagram_length() {
+        let mut wire = b"\x0bf1b96bdc".to_vec();
+        for len in 1..wire.len() {
             assert!(matches!(
-                ProtoEvent::try_from(packet),
-                Err(ProtocolError::InvalidEventId(_))
+                ProtoEvent::try_from(&wire[..len]),
+                Err(ProtocolError::InvalidHello)
             ));
         }
+        wire.push(0);
+        assert!(matches!(
+            ProtoEvent::try_from(wire.as_slice()),
+            Err(ProtocolError::InvalidHello)
+        ));
     }
 
     #[test]
