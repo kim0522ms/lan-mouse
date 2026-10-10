@@ -89,25 +89,18 @@ impl X11InputCapture {
         .into_iter()
         .find_map(|(pos, active)| active.then_some(pos))?;
 
-        if self.active_positions.contains(&detected_edge) {
-            return Some((detected_edge, detected_edge));
-        }
-
-        // In X11 fallback mode this backend is used only for incoming
-        // return barriers. When a single peer is controlling this machine,
-        // any physical screen edge should return control to that peer even
-        // if the peer reported a different logical edge.
-        if self.active_positions.len() == 1 {
-            return self
-                .active_positions
-                .iter()
-                .next()
-                .copied()
-                .map(|capture_edge| (detected_edge, capture_edge));
-        }
-
-        None
+        choose_capture_edge(&self.active_positions, detected_edge)
+            .map(|capture_edge| (detected_edge, capture_edge))
     }
+}
+
+fn choose_capture_edge(
+    active_positions: &HashSet<Position>,
+    detected_edge: Position,
+) -> Option<Position> {
+    active_positions
+        .contains(&detected_edge)
+        .then_some(detected_edge)
 }
 
 impl Drop for X11InputCapture {
@@ -115,6 +108,33 @@ impl Drop for X11InputCapture {
         unsafe {
             xlib::XCloseDisplay(self.display);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn positions(positions: &[Position]) -> HashSet<Position> {
+        positions.iter().copied().collect()
+    }
+
+    #[test]
+    fn accepts_matching_edge() {
+        let active = positions(&[Position::Right]);
+
+        assert_eq!(
+            choose_capture_edge(&active, Position::Right),
+            Some(Position::Right)
+        );
+    }
+
+    #[test]
+    fn rejects_perpendicular_edge_for_single_return_barrier() {
+        let active = positions(&[Position::Right]);
+
+        assert_eq!(choose_capture_edge(&active, Position::Bottom), None);
+        assert_eq!(choose_capture_edge(&active, Position::Top), None);
     }
 }
 
